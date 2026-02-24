@@ -1,0 +1,6 @@
+python-telegram-bot
+python-dotenv
+langchain-google-genai
+langchain
+supabase
+flask
