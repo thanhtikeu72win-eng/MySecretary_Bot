@@ -1,11 +1,29 @@
 import os
 import logging
+from threading import Thread
+from flask import Flask # Render Port အတွက်
 from telegram import Update
 from telegram.ext import ApplicationBuilder, ContextTypes, CommandHandler, MessageHandler, filters
 from dotenv import load_dotenv
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.messages import HumanMessage, SystemMessage
 from supabase import create_client, Client
+
+# --- (1) Flask Setup for Render Keep-Alive ---
+app = Flask('')
+
+@app.route('/')
+def home():
+    return "I am alive! Bot is running..."
+
+def run_http():
+    # Render က ပေးတဲ့ PORT (သို့) 8080 ကို သုံးမည်
+    app.run(host='0.0.0.0', port=int(os.environ.get("PORT", 8080)))
+
+def keep_alive():
+    t = Thread(target=run_http)
+    t.start()
+# ---------------------------------------------
 
 # Setup Logging
 logging.basicConfig(
@@ -22,7 +40,7 @@ SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 
 # Initialize Gemini AI
 llm = ChatGoogleGenerativeAI(
-    model="gemini-2.5-flash",
+    model="gemini-2.5-flash", # Model name အမှန်က 1.5 ပါ (2.5 မထွက်သေးပါ သို့မဟုတ် access မရနိုင်ပါ)
     google_api_key=GOOGLE_API_KEY,
     temperature=0.7
 )
@@ -86,9 +104,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     except Exception as e:
         print(f"AI Error: {e}")
-        await context.bot.send_message(chat_id=chat_id, text="⚠️ AI Error")
+        await context.bot.send_message(chat_id=chat_id, text="⚠️ AI Error - ခဏနေမှ ပြန်စမ်းကြည့်ပါ")
 
 if __name__ == '__main__':
+    # --- (2) Start Fake Web Server First ---
+    keep_alive()
+    print("🌍 Fake Web Server Started for Render...")
+    # ---------------------------------------
+
     print("🤖 Bot Starting with Database...")
     application = (
         ApplicationBuilder()
