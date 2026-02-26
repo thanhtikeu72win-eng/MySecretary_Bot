@@ -4,3 +4,10 @@ langchain-google-genai
 langchain
 supabase
 flask
+requests
+beautifulsoup4
+pypdf
+langchain-community
+langchain-google-genai
+langchain-openai
+faiss-cpu
