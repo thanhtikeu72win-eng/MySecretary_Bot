@@ -10,7 +10,7 @@ from telegram.ext import ApplicationBuilder, ContextTypes, CommandHandler, Messa
 # --- AI & Database Libraries ---
 from langchain_google_genai import GoogleGenerativeAIEmbeddings, ChatGoogleGenerativeAI
 from langchain_community.document_loaders import PyPDFLoader, WebBaseLoader
-from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import SupabaseVectorStore
 from supabase.client import create_client
 
