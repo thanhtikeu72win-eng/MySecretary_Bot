@@ -1,8 +1,9 @@
 python-telegram-bot
 python-dotenv
 langchain
-langchain-google-genai
 langchain-community
+langchain-google-genai
+langchain-text-splitters
 google-generativeai
 supabase
 pypdf
