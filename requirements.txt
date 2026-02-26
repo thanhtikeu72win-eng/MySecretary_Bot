@@ -1,19 +1,10 @@
 python-telegram-bot
 python-dotenv
-langchain-google-genai
 langchain
-supabase
-flask
-requests
-beautifulsoup4
-pypdf
-langchain-community
 langchain-google-genai
-langchain-core
-langchain-openai
-faiss-cpu
-<<<<<<< HEAD
-pgvector
-=======
-pgvector
->>>>>>> f0ed5dfc20981dba285e7ebe360a4e40198e5d65
+langchain-community
+google-generativeai
+supabase
+pypdf
+beautifulsoup4
+flask
