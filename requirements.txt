@@ -1,0 +1,15 @@
+python-telegram-bot
+python-dotenv
+langchain-google-genai
+langchain
+supabase
+flask
+requests
+beautifulsoup4
+pypdf
+langchain-community
+langchain-google-genai
+langchain-core
+langchain-openai
+faiss-cpu
+pgvector
