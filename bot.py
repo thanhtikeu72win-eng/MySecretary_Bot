@@ -10,7 +10,7 @@ from telegram.ext import ApplicationBuilder, ContextTypes, CommandHandler, Messa
 # Gemini & LangChain Imports
 import google.generativeai as genai
 from langchain_google_genai import GoogleGenerativeAIEmbeddings, ChatGoogleGenerativeAI
-from langchain_community.document_loaders import PyPDFLoader, Docx2txtLoader
+from langchain_community.document_loaders import PyPDFLoader, Docx2txtLoader, WebBaseLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import SupabaseVectorStore
 from supabase.client import Client, create_client
@@ -34,7 +34,7 @@ print(f"DEBUG CHECK: SUPABASE_KEY is {'✅ OK' if SUPABASE_KEY else '❌ MISSING
 # 3. Global Vars
 vector_store = None
 llm = None
-supabase = None # Client for raw queries
+supabase = None 
 
 def init_services():
     global vector_store, llm, supabase
@@ -68,15 +68,26 @@ MAIN_MENU_KEYBOARD = ReplyKeyboardMarkup(
 # ---------------------------------------------------------
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data['mode'] = None
     await update.message.reply_text("မင်္ဂလာပါ Boss! စနစ် အဆင်သင့်ပါ။", reply_markup=MAIN_MENU_KEYBOARD)
 
 async def handle_menu_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
     
+    # Check if user is in 'Adding Link' mode
+    if context.user_data.get('mode') == 'add_link':
+        if text.startswith("http"):
+            await process_link(update, context, text)
+        else:
+            await update.message.reply_text("❌ Link အမှန် မဟုတ်ပါဘူး Boss။ (http နဲ့ စရပါမယ်)", reply_markup=MAIN_MENU_KEYBOARD)
+        context.user_data['mode'] = None # Reset mode
+        return
+
+    # Normal Menu Logic
     if text == "🧠 My Brain":
         keyboard = [
-            [InlineKeyboardButton("📥 Add PDF/Word", callback_data="add_doc"), InlineKeyboardButton("🗂 List Memory", callback_data="list_mem")],
-            [InlineKeyboardButton("🧹 Clear All", callback_data="clear_mem")]
+            [InlineKeyboardButton("📥 Add PDF/Word", callback_data="add_doc"), InlineKeyboardButton("🔗 Add Link", callback_data="add_link")],
+            [InlineKeyboardButton("🗂 List Memory", callback_data="list_mem"), InlineKeyboardButton("🧹 Clear All", callback_data="clear_mem")]
         ]
         await update.message.reply_text("🧠 **My Brain Panel:**", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
         
@@ -103,73 +114,71 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
     if query.data == "add_doc":
         await query.edit_message_text("📥 PDF သို့မဟုတ် Word ဖိုင် ပို့ပေးပါ Boss။")
 
+    elif query.data == "add_link":
+        context.user_data['mode'] = 'add_link'
+        await query.edit_message_text("🔗 Web Link (URL) ကို Copy ကူးပြီး ပို့ပေးပါ Boss။")
+
     elif query.data == "list_mem":
-        # Query Supabase for unique sources
         if not supabase:
             await query.edit_message_text("❌ Database Connection Error.")
             return
-            
         try:
-            # Fetch metadata from documents table (Limit to last 100 entries to avoid overflow)
             response = supabase.table("documents").select("metadata").limit(100).execute()
-            data = response.data
-            
-            # Extract unique sources
-            sources = set()
-            for row in data:
-                meta = row.get('metadata', {})
-                if 'source' in meta:
-                    sources.add(meta['source'])
+            sources = set(row['metadata'].get('source') for row in response.data if 'source' in row['metadata'])
             
             if not sources:
-                await query.edit_message_text("📭 My Brain မှာ ဘာမှ မရှိသေးပါဘူး Boss။")
+                await query.edit_message_text("📭 Empty Memory.")
             else:
                 text_list = "\n".join([f"• {s}" for s in sources])
-                await query.edit_message_text(f"🗂 **မှတ်သားထားသော ဖိုင်များ:**\n\n{text_list}", parse_mode="Markdown")
-                
+                await query.edit_message_text(f"🗂 **Sources:**\n\n{text_list}", parse_mode="Markdown")
         except Exception as e:
             await query.edit_message_text(f"❌ List Error: {str(e)}")
 
     elif query.data == "clear_mem":
-        await query.edit_message_text("🧹 Database ကို ဖျက်ဖို့အတွက် Supabase Dashboard ကနေ လုပ်တာ ပိုစိတ်ချရပါတယ် Boss။")
+        await query.edit_message_text("🧹 Supabase Dashboard ကနေ ဖျက်ပေးပါ Boss။")
+
+async def process_link(update: Update, context: ContextTypes.DEFAULT_TYPE, url):
+    """Handles Web Link Processing"""
+    if not vector_store: return
+    status = await update.message.reply_text(f"🔗 Reading Website: {url}...", reply_markup=MAIN_MENU_KEYBOARD)
+    
+    try:
+        loader = WebBaseLoader(url)
+        docs = loader.load()
+        text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
+        texts = text_splitter.split_documents(docs)
+        for doc in texts: doc.metadata = {"source": url}
+        
+        vector_store.add_documents(texts)
+        await context.bot.edit_message_text(chat_id=update.effective_chat.id, message_id=status.message_id, text=f"✅ Saved Link: {url}")
+    except Exception as e:
+        await context.bot.edit_message_text(chat_id=update.effective_chat.id, message_id=status.message_id, text=f"❌ Link Error: {str(e)}")
 
 async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Same logic as before
     if not vector_store: return
     document = update.message.document
     file_name = document.file_name
     
-    # Check file type
     if not (file_name.endswith('.pdf') or file_name.endswith('.docx')):
-        await update.message.reply_text("❌ PDF သို့မဟုတ် DOCX ဖိုင်ပဲ လက်ခံပါတယ် Boss။")
+        await update.message.reply_text("❌ PDF/DOCX Only!")
         return
 
     status = await update.message.reply_text(f"📥 Reading {file_name}...", reply_markup=MAIN_MENU_KEYBOARD)
-    
     try:
         file = await context.bot.get_file(document.file_id)
-        
-        # Determine loader based on extension
         with tempfile.NamedTemporaryFile(delete=True, suffix=os.path.splitext(file_name)[1]) as temp_file:
             await file.download_to_drive(custom_path=temp_file.name)
+            if file_name.endswith('.pdf'): loader = PyPDFLoader(temp_file.name)
+            else: loader = Docx2txtLoader(temp_file.name)
             
-            if file_name.endswith('.pdf'):
-                loader = PyPDFLoader(temp_file.name)
-            else:
-                loader = Docx2txtLoader(temp_file.name) # Requires docx2txt
-                
             pages = loader.load()
             text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
             texts = text_splitter.split_documents(pages)
+            for doc in texts: doc.metadata = {"source": file_name}
             
-            # Add metadata
-            for doc in texts: 
-                doc.metadata = {"source": file_name}
-            
-            # Save to DB
             vector_store.add_documents(texts)
-            
         await context.bot.edit_message_text(chat_id=update.effective_chat.id, message_id=status.message_id, text=f"✅ Saved: {file_name}")
-        
     except Exception as e:
         await context.bot.edit_message_text(chat_id=update.effective_chat.id, message_id=status.message_id, text=f"❌ Error: {str(e)}")
 
@@ -190,7 +199,6 @@ if __name__ == '__main__':
     if TELEGRAM_BOT_TOKEN:
         application = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
         application.add_handler(CommandHandler('start', start))
-        # Handle both PDF and DOCX via generic Document filter
         application.add_handler(MessageHandler(filters.Document.ALL, handle_document))
         application.add_handler(CallbackQueryHandler(handle_callback_query))
         application.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_menu_click))
