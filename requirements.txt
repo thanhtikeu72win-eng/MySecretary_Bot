@@ -9,3 +9,4 @@ supabase
 pypdf
 beautifulsoup4
 flask
+docx2txt
