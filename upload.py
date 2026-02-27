@@ -12,7 +12,7 @@ import google.generativeai as genai
 # ⚙️ CONFIGURATION
 # ==========================================
 
-GOOGLE_API_KEY = "AIzaSyCxUqSySmUw8rttC3GGJQqdR49e9voiYsw"
+GOOGLE_API_KEY="AIzaSyCxUqSySmUw8rttC3GGJQqdR49e9voiYsw"
 SUPABASE_URL = "https://kwxewupfltgyczmiagkf.supabase.co"
 SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imt3eGV3dXBmbHRneWN6bWlhZ2tmIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzE4OTg3NjgsImV4cCI6MjA4NzQ3NDc2OH0.ID_uXSsRPIk3Y_rR78YwV97NQOXsdxNA9Fnj6mZVsW0"
 
@@ -33,8 +33,8 @@ def main():
         genai.configure(api_key=GOOGLE_API_KEY)
         supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
         
-        # 🔥 CHANGE HERE: Using the stable model 'models/embedding-001'
-        embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001", google_api_key=GOOGLE_API_KEY)
+        # 🔥 CHANGE HERE: Using YOUR specific model 'models/gemini-embedding-001'
+        embeddings = GoogleGenerativeAIEmbeddings(model="models/gemini-embedding-001", google_api_key=GOOGLE_API_KEY)
         
     except Exception as e:
         print(f"❌ Connection Error: {e}")
