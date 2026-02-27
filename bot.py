@@ -45,7 +45,7 @@ def init_services():
 
         if SUPABASE_URL and SUPABASE_KEY:
             supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
-            embeddings = GoogleGenerativeAIEmbeddings(model="models/text-embedding-004", google_api_key=GOOGLE_API_KEY)
+            embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001", google_api_key=GOOGLE_API_KEY)
             vector_store = SupabaseVectorStore(client=supabase, embedding=embeddings, table_name="documents", query_name="match_documents")
             logger.info("✅ Services Initialized")
     except Exception as e:
