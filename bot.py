@@ -36,11 +36,10 @@ vector_store = SupabaseVectorStore(
     table_name="documents",
     query_name="match_documents"
 )
-llm = ChatGoogleGenerativeAI(model="gemini-pro", temperature=0.7)
+llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", temperature=0.7)
 
 # --- Web Server for Render (Keep Alive) ---
 app = Flask(__name__)
-
 @app.route('/')
 def home():
     return "Bot is running!"
