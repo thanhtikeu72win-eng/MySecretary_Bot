@@ -25,6 +25,13 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 
+# --- DEBUGGING START ---
+print(f"DEBUG CHECK: TELEGRAM_BOT_TOKEN is {'✅ OK' if TELEGRAM_BOT_TOKEN else '❌ MISSING'}")
+print(f"DEBUG CHECK: GEMINI_API_KEY is {'✅ OK' if GEMINI_API_KEY else '❌ MISSING'}")
+print(f"DEBUG CHECK: SUPABASE_URL is {'✅ OK' if SUPABASE_URL else '❌ MISSING'}")
+print(f"DEBUG CHECK: SUPABASE_KEY is {'✅ OK' if SUPABASE_KEY else '❌ MISSING'}")
+# --- DEBUGGING END ---
+
 # Check if keys are present
 if not all([TELEGRAM_BOT_TOKEN, GEMINI_API_KEY, SUPABASE_URL, SUPABASE_KEY]):
     raise ValueError("Missing environment variables! Check Render settings.")
