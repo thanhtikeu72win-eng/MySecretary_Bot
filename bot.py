@@ -21,27 +21,27 @@ logging.basicConfig(
 
 # 2. Load Environment Variables
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 
 # --- DEBUGGING START ---
 print(f"DEBUG CHECK: TELEGRAM_BOT_TOKEN is {'✅ OK' if TELEGRAM_BOT_TOKEN else '❌ MISSING'}")
-print(f"DEBUG CHECK: GEMINI_API_KEY is {'✅ OK' if GEMINI_API_KEY else '❌ MISSING'}")
+print(f"DEBUG CHECK: GOOGLE_API_KEY is {'✅ OK' if GOOGLE_API_KEY else '❌ MISSING'}")
 print(f"DEBUG CHECK: SUPABASE_URL is {'✅ OK' if SUPABASE_URL else '❌ MISSING'}")
 print(f"DEBUG CHECK: SUPABASE_KEY is {'✅ OK' if SUPABASE_KEY else '❌ MISSING'}")
 # --- DEBUGGING END ---
 
 # Check if keys are present
-if not all([TELEGRAM_BOT_TOKEN, GEMINI_API_KEY, SUPABASE_URL, SUPABASE_KEY]):
+if not all([TELEGRAM_BOT_TOKEN, GOOGLE_API_KEY, SUPABASE_URL, SUPABASE_KEY]):
     raise ValueError("Missing environment variables! Check Render settings.")
 
 # 3. Initialize Clients
-genai.configure(api_key=GEMINI_API_KEY)
+genai.configure(api_key=GOOGLE_API_KEY)
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 # Setup Embeddings & Vector Store
-embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001", google_api_key=GEMINI_API_KEY)
+embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001", google_api_key=GOOGLE_API_KEY)
 vector_store = SupabaseVectorStore(
     client=supabase,
     embedding=embeddings,
@@ -50,7 +50,7 @@ vector_store = SupabaseVectorStore(
 )
 
 # Setup Chat Model
-llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", google_api_key=GEMINI_API_KEY)
+llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", google_api_key=GOOGLE_API_KEY)
 
 # ---------------------------------------------------------
 # Helper Functions
@@ -75,9 +75,9 @@ async def process_document(update: Update, context: ContextTypes.DEFAULT_TYPE, t
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "မင်္ဂလာပါ! ကျွန်တော်က သင်၏ AI Secretary ပါ။ 🤖\n\n"
-        "1. **PDF ဖိုင်** ပို့ပေးပါ - ကျွန်တော် ဖတ်ပြီး မှတ်ထားပါမယ်။\n"
-        "2. **Website Link** ပို့ပါ - ကျွန်တော် ဖတ်ပြီး မှတ်ထားပါမယ်။\n"
+        "မင်္ဂလာပါ! ကျွန်မက ဆရာရဲ့ AI Secretary ပါ။ 🤖\n\n"
+        "1. **PDF ဖိုင်** ပို့ပေးပါ - ကျွန်မ ဖတ်ပြီး မှတ်ထားပါမယ်။\n"
+        "2. **Website Link** ပို့ပါ - ကျွန်မ ဖတ်ပြီး မှတ်ထားပါမယ်။\n"
         "3. **မေးခွန်းမေးပါ** - မှတ်ထားတဲ့ အချက်အလက်တွေထဲက ပြန်ဖြေပေးပါမယ်။"
     )
 
