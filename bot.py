@@ -43,7 +43,7 @@ vector_store = SupabaseVectorStore(
 )
 
 # Setup Chat Model
-llm = ChatGoogleGenerativeAI(model="gemini-1.5-flash", google_api_key=GEMINI_API_KEY)
+llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", google_api_key=GEMINI_API_KEY)
 
 # ---------------------------------------------------------
 # Helper Functions
