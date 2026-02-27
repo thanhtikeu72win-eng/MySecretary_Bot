@@ -1,137 +1,191 @@
 import os
 import logging
 import asyncio
-import threading
 import tempfile
-from flask import Flask
 from telegram import Update
 from telegram.ext import ApplicationBuilder, ContextTypes, CommandHandler, MessageHandler, filters
 
-# --- AI & Database Libraries ---
+# Gemini & LangChain Imports
+import google.generativeai as genai
 from langchain_google_genai import GoogleGenerativeAIEmbeddings, ChatGoogleGenerativeAI
 from langchain_community.document_loaders import PyPDFLoader, WebBaseLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import SupabaseVectorStore
-from supabase.client import create_client
+from supabase.client import Client, create_client
 
-# --- Setup Logging ---
+# 1. Setup Logging
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO
 )
 
-# --- Environment Variables ---
-TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+# 2. Load Environment Variables
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
-GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
-PORT = int(os.environ.get('PORT', 5000))  # Render Port
 
-# --- Setup AI & DB Clients ---
-supabase_client = create_client(SUPABASE_URL, SUPABASE_KEY)
-embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001")
+# Check if keys are present
+if not all([TELEGRAM_BOT_TOKEN, GEMINI_API_KEY, SUPABASE_URL, SUPABASE_KEY]):
+    raise ValueError("Missing environment variables! Check Render settings.")
+
+# 3. Initialize Clients
+genai.configure(api_key=GEMINI_API_KEY)
+supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+
+# Setup Embeddings & Vector Store
+embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001", google_api_key=GEMINI_API_KEY)
 vector_store = SupabaseVectorStore(
-    client=supabase_client,
+    client=supabase,
     embedding=embeddings,
     table_name="documents",
     query_name="match_documents"
 )
-llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", temperature=0.7)
 
-# --- Web Server for Render (Keep Alive) ---
-app = Flask(__name__)
-@app.route('/')
-def home():
-    return "Bot is running!"
+# Setup Chat Model
+llm = ChatGoogleGenerativeAI(model="gemini-1.5-flash", google_api_key=GEMINI_API_KEY)
 
-def run_web_server():
-    app.run(host='0.0.0.0', port=PORT)
+# ---------------------------------------------------------
+# Helper Functions
+# ---------------------------------------------------------
 
-# --- Bot Commands ---
+async def process_document(update: Update, context: ContextTypes.DEFAULT_TYPE, texts, source_name):
+    """Common function to save texts to Supabase"""
+    try:
+        await update.message.reply_text(f"⏳ Saving {len(texts)} chunks from {source_name}...")
+        
+        # Async add to vector store
+        vector_store.add_documents(texts)
+        
+        await update.message.reply_text(f"✅ Successfully saved {source_name} to knowledge base!")
+    except Exception as e:
+        logging.error(f"Error saving document: {e}")
+        await update.message.reply_text(f"❌ Error saving document: {str(e)}")
+
+# ---------------------------------------------------------
+# Handlers
+# ---------------------------------------------------------
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "မင်္ဂလာပါ! ကျွန်တော်က MySecretary AI Bot ပါ။\n\n"
-        "ကျွန်တော့်ကို PDF ဖိုင်တွေ ပို့ပေးလို့ ရသလို၊ Link တွေ ပို့ပေးပြီး မှတ်ခိုင်းလို့ရပါတယ်။\n"
-        "ပြီးရင် သိချင်တာ ပြန်မေးနိုင်ပါတယ်ခင်ဗျာ။"
+        "မင်္ဂလာပါ! ကျွန်တော်က သင်၏ AI Secretary ပါ။ 🤖\n\n"
+        "1. **PDF ဖိုင်** ပို့ပေးပါ - ကျွန်တော် ဖတ်ပြီး မှတ်ထားပါမယ်။\n"
+        "2. **Website Link** ပို့ပါ - ကျွန်တော် ဖတ်ပြီး မှတ်ထားပါမယ်။\n"
+        "3. **မေးခွန်းမေးပါ** - မှတ်ထားတဲ့ အချက်အလက်တွေထဲက ပြန်ဖြေပေးပါမယ်။"
     )
 
-async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    file = await update.message.document.get_file()
-    file_name = update.message.document.file_name
-
-    if not file_name.endswith('.pdf'):
-        await update.message.reply_text("PDF ဖိုင်ပဲ လက်ခံပါတယ်ခင်ဗျာ။")
+async def handle_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle PDF file uploads"""
+    document = update.message.document
+    if document.mime_type != 'application/pdf':
+        await update.message.reply_text("Please send a PDF file.")
         return
 
-    status_msg = await update.message.reply_text(f"📄 '{file_name}' ကို ဖတ်နေပါတယ်... ခဏစောင့်ပါ...")
-
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp_file:
-        await file.download_to_drive(tmp_file.name)
-        tmp_path = tmp_file.name
-
-    try:
-        loader = PyPDFLoader(tmp_path)
-        documents = loader.load()
+    await update.message.reply_text("📥 Receiving PDF...")
+    
+    # Download file
+    file = await context.bot.get_file(document.file_id)
+    
+    # Use temp file to process
+    with tempfile.NamedTemporaryFile(delete=True, suffix=".pdf") as temp_pdf:
+        await file.download_to_drive(custom_path=temp_pdf.name)
+        
+        # Load PDF
+        loader = PyPDFLoader(temp_pdf.name)
+        pages = loader.load()
+        
+        # Split text
         text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
-        chunks = text_splitter.split_documents(documents)
-        vector_store.add_documents(chunks)
-        await status_msg.edit_text(f"✅ '{file_name}' ကို ဖတ်ပြီး မှတ်ဉာဏ်ထဲ ထည့်လိုက်ပါပြီ! သိချင်တာ မေးလို့ရပါပြီ။")
-    except Exception as e:
-        await status_msg.edit_text(f"❌ Error ဖြစ်သွားပါတယ်: {str(e)}")
-    finally:
-        if os.path.exists(tmp_path):
-            os.remove(tmp_path)
+        texts = text_splitter.split_documents(pages)
+        
+        # Add metadata (source name)
+        for doc in texts:
+            doc.metadata = {"source": document.file_name}
 
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        # Save to Supabase
+        await process_document(update, context, texts, document.file_name)
+
+async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle text messages (Links or Questions)"""
     user_text = update.message.text
 
-    # Check for Link
-    if user_text.startswith("http"):
-        status_msg = await update.message.reply_text(f"🌐 Link ကို ဖတ်နေပါတယ်...")
+    # 1. Check if it's a URL
+    if user_text.startswith("http://") or user_text.startswith("https://"):
+        await update.message.reply_text(f"🔗 Reading website: {user_text}...")
         try:
             loader = WebBaseLoader(user_text)
-            documents = loader.load()
+            docs = loader.load()
+            
             text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
-            chunks = text_splitter.split_documents(documents)
-            vector_store.add_documents(chunks)
-            await status_msg.edit_text(f"✅ Link ကို ဖတ်ပြီးပါပြီ!")
+            texts = text_splitter.split_documents(docs)
+            
+            # Add metadata
+            for doc in texts:
+                doc.metadata = {"source": user_text}
+
+            await process_document(update, context, texts, "Website")
         except Exception as e:
-            await status_msg.edit_text(f"❌ Link ဖတ်မရပါ: {str(e)}")
+            await update.message.reply_text(f"❌ Error reading website: {str(e)}")
         return
 
-    # RAG Response (Search & Answer)
+    # 2. Assume it's a Question (RAG)
+    await update.message.reply_chat_action("typing")
+    
     try:
-        docs = vector_store.similarity_search(user_text)
-        context_text = "\n\n".join([doc.page_content for doc in docs])
-
+        # Search Supabase
+        related_docs = vector_store.similarity_search(user_text, k=3)
+        
+        context_text = "\n\n".join([doc.page_content for doc in related_docs])
+        
         if not context_text:
-            # If no context found, use general knowledge
-            response = llm.invoke(user_text)
-            await update.message.reply_text(response.content)
+             # If no context found, just ask Gemini generally
+            prompt = user_text
+            await update.message.reply_text("No related documents found. Answering from general knowledge...")
         else:
+            # Construct Prompt with Context
             prompt = f"""
-            အောက်ပါ အချက်အလက်များကို အခြေခံပြီး မေးခွန်းကို ဖြေပါ။
+            Answer the question based ONLY on the following context:
             
-            အချက်အလက်များ:
             {context_text}
             
-            မေးခွန်း: {user_text}
+            Question: {user_text}
             """
-            response = llm.invoke(prompt)
-            await update.message.reply_text(response.content)
+        
+        # Generate Answer
+        response = llm.invoke(prompt)
+        await update.message.reply_text(response.content)
+
     except Exception as e:
-        logging.error(f"Error generating response: {e}")
-        await update.message.reply_text("ဆောရီးပါ၊ အဖြေရှာမရလို့ နောက်မှ ပြန်မေးကြည့်ပေးပါခင်ဗျာ။")
+        logging.error(f"Error generating answer: {e}")
+        await update.message.reply_text("❌ Sorry, something went wrong.")
+
+# ---------------------------------------------------------
+# Main
+# ---------------------------------------------------------
 
 if __name__ == '__main__':
-    # Start Web Server in Background Thread
-    threading.Thread(target=run_web_server).start()
-    
+    # Flask Server for Render (Dummy Server to keep port open)
+    from flask import Flask
+    from threading import Thread
+
+    flask_app = Flask('')
+    @flask_app.route('/')
+    def home():
+        return "Bot is running!"
+
+    def run_flask():
+        port = int(os.environ.get("PORT", 10000))
+        flask_app.run(host='0.0.0.0', port=port)
+
+    # Start Flask in a separate thread
+    Thread(target=run_flask).start()
+
     # Start Bot
-    application = ApplicationBuilder().token(TOKEN).build()
+    application = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
+
     application.add_handler(CommandHandler('start', start))
-    application.add_handler(MessageHandler(filters.Document.PDF, handle_document))
-    application.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
-    print("Bot is running...")
+    application.add_handler(MessageHandler(filters.Document.PDF, handle_pdf)) # Handle PDFs
+    application.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_text)) # Handle Text/Links
+
+    print("Bot is polling...")
     application.run_polling()
