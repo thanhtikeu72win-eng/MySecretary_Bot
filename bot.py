@@ -5,7 +5,7 @@ import requests
 import json
 from flask import Flask
 from threading import Thread
-from telegram import Update, ReplyKeyboardMarkup, InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton
+from telegram import Update, ReplyKeyboardMarkup, InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, BotCommand
 from telegram.ext import ApplicationBuilder, ContextTypes, CommandHandler, MessageHandler, CallbackQueryHandler, filters
 
 # Gemini & Pinecone Imports
@@ -48,14 +48,14 @@ def init_services():
         logger.error(f"❌ Service Init Error: {e}")
 
 # ---------------------------------------------------------
-# HELPER FUNCTIONS
+# HELPER FUNCTIONS (Improved with Timeouts)
 # ---------------------------------------------------------
 
 def get_weather_card(city_name):
     try:
         # 1. Geocoding
         geo_url = f"https://geocoding-api.open-meteo.com/v1/search?name={city_name}&count=1&language=en&format=json"
-        geo_res = requests.get(geo_url).json()
+        geo_res = requests.get(geo_url, timeout=10).json()
         if not geo_res.get('results'): return None
         
         lat = geo_res['results'][0]['latitude']
@@ -65,13 +65,13 @@ def get_weather_card(city_name):
 
         # 2. Weather Data
         w_url = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&current=temperature_2m,apparent_temperature,precipitation,weather_code,wind_speed_10m&timezone=auto"
-        w_res = requests.get(w_url).json()
+        w_res = requests.get(w_url, timeout=10).json()
         curr = w_res['current']
 
-        # 3. Air Quality Data (Separate API Endpoint)
+        # 3. Air Quality Data
         aqi_url = f"https://air-quality-api.open-meteo.com/v1/air-quality?latitude={lat}&longitude={lon}&current=us_aqi,pm2_5"
-        aqi_res = requests.get(aqi_url).json()
-        curr_aqi = aqi_res['current']
+        aqi_res = requests.get(aqi_url, timeout=10).json()
+        curr_aqi = aqi_res.get('current', {'us_aqi': 'N/A', 'pm2_5': 'N/A'})
         
         # Determine Status Icon
         code = curr['weather_code']
@@ -96,7 +96,7 @@ def get_weather_card(city_name):
 
 def get_cbm_card_data():
     try:
-        cbm = requests.get("https://forex.cbm.gov.mm/api/latest").json()
+        cbm = requests.get("https://forex.cbm.gov.mm/api/latest", timeout=10).json()
         return {
             "date": cbm['info'],
             "rates": cbm['rates']
@@ -106,7 +106,7 @@ def get_cbm_card_data():
         return None
 
 # ---------------------------------------------------------
-# Keyboards (Added is_persistent=True)
+# Keyboards (Persistent)
 # ---------------------------------------------------------
 
 MAIN_MENU = ReplyKeyboardMarkup(
@@ -151,6 +151,15 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data['section'] = 'main'
     context.user_data['mode'] = None
     if 'persona' not in context.user_data: context.user_data['persona'] = 'cute'
+    
+    # Persistent Menu Commands
+    commands = [
+        BotCommand("start", "🏠 Main Menu"),
+        BotCommand("weather", "🌦️ Check Weather"),
+        BotCommand("currency", "💰 Check Rates"),
+    ]
+    await context.bot.set_my_commands(commands)
+    
     await update.message.reply_text("မင်္ဂလာပါ Boss! ရှင့်ရဲ့ အတွင်းရေးမှူးမလေး အဆင်သင့်ရှိနေပါတယ်ရှင်။ 👩‍💼\n\nဒီနေ့ ဘာကူညီပေးရမလဲ?", reply_markup=MAIN_MENU)
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -159,36 +168,46 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_mode = context.user_data.get('mode')
         section = context.user_data.get('section', 'main')
         
-        # --- 1. Global Back Button ---
-        if text == "🔙 Back" or text == "🔙 Main Menu":
+        # --- 1. Global Navigation & Commands ---
+        if text == "🔙 Back" or text == "🔙 Main Menu" or text == "/start":
             context.user_data['mode'] = None
             if section == 'settings':
                 context.user_data['section'] = 'utils'
-                await update.message.reply_text("Utilities Menu လေး ပြန်ရောက်ပါပြီရှင်။", reply_markup=UTILS_MENU)
+                await update.message.reply_text("Utilities Menu", reply_markup=UTILS_MENU)
             elif section == 'utils' or section == 'schedule' or section == 'ai_assistant':
                 context.user_data['section'] = 'main'
-                await update.message.reply_text("Main Menu ကို ပြန်ရောက်ပါပြီ Boss။", reply_markup=MAIN_MENU)
+                await update.message.reply_text("Main Menu", reply_markup=MAIN_MENU)
             else:
                 context.user_data['section'] = 'main'
-                await update.message.reply_text("Main Menu ပါရှင်။", reply_markup=MAIN_MENU)
+                await update.message.reply_text("Main Menu", reply_markup=MAIN_MENU)
             return
 
-        # --- 2. Action Modes ---
+        # Direct Commands support
+        if text == "/weather":
+            context.user_data['section'] = 'utils'
+            context.user_data['mode'] = 'check_weather'
+            await update.message.reply_text("🌦️ ဘယ်မြို့အတွက် ကြည့်ပေးရမလဲ Boss? (ဥပမာ: Yangon)", reply_markup=BACK_BTN); return
+        
+        if text == "/currency":
+            context.user_data['section'] = 'utils'
+            # Trigger Currency Logic directly below
+            text = "💰 Currency" 
+
+        # --- 2. Input Modes (Waiting for user input) ---
         if user_mode == 'check_weather':
             city = text
             await update.message.reply_text(f"🔍 {city} အတွက် Dashboard လေး ထုတ်ပေးနေပါတယ်ရှင်...", reply_markup=UTILS_MENU)
             
             w_data = get_weather_card(city)
             if w_data:
-                # Clean Dashboard Style with AQI
                 msg = f"🌤️ <b>WEATHER DASHBOARD</b>\n"
                 msg += f"📍 <b>{w_data['name']}, {w_data['country']}</b>\n"
                 msg += "━━━━━━━━━━━━━━━━━━\n"
-                msg += f"🌡️ Temp : <b>{w_data['temp']}°C</b> (Feels {w_data['feels']}°C)\n"
-                msg += f"🏭 AQI  : <b>{w_data['us_aqi']} USAQI+</b>\n"
-                msg += f"😷 PM2.5: <b>{w_data['pm25']} μg/m³</b>\n"
-                msg += f"💨 Wind : <b>{w_data['wind']} km/h</b>\n"
-                msg += f"💧 Rain : <b>{w_data['rain']} mm</b>\n"
+                msg += f"🌡️ Temp  : <b>{w_data['temp']}°C</b> (Feels {w_data['feels']}°C)\n"
+                msg += f"🏭 AQI   : <b>{w_data['us_aqi']} USAQI+</b>\n"
+                msg += f"😷 PM2.5 : <b>{w_data['pm25']} μg/m³</b>\n"
+                msg += f"💨 Wind  : <b>{w_data['wind']} km/h</b>\n"
+                msg += f"💧 Rain  : <b>{w_data['rain']} mm</b>\n"
                 msg += "━━━━━━━━━━━━━━━━━━\n"
                 msg += f"💡 Status: {w_data['status']}"
                 
@@ -213,11 +232,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif user_mode == 'add_link':
             await process_link(update, context, text); context.user_data['mode'] = None; return
         elif user_mode == 'delete_data':
-            # Deletion logic (simplified)
+            # Logic to be implemented
             context.user_data['mode'] = None; return
 
         # --- 3. Menu Navigation ---
-        
         if text == "🧠 My Brain":
             context.user_data['section'] = 'brain'
             keyboard = [[InlineKeyboardButton("📥 Add PDF/Word", callback_data="add_doc"), InlineKeyboardButton("🔗 Add Link", callback_data="add_link")], [InlineKeyboardButton("📊 Stats", callback_data="list_mem"), InlineKeyboardButton("🗑️ Delete Data", callback_data="del_data")]]
@@ -237,7 +255,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             context.user_data['section'] = 'utils'
             await update.message.reply_text("⚡ **Utilities**", reply_markup=UTILS_MENU); return
 
-        if section == 'utils':
+        if section == 'utils' or text == "💰 Currency" or text == "🌦️ Weather":
             if text == "🌦️ Weather":
                 context.user_data['mode'] = 'check_weather'
                 await update.message.reply_text("🌦️ ဘယ်မြို့အတွက် ကြည့်ပေးရမလဲ Boss? (ဥပမာ: Yangon)", reply_markup=BACK_BTN); return
@@ -246,10 +264,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await update.message.reply_text("💰 **ဗဟိုဘဏ်ပေါက်ဈေး (CBM Rate) ကို ထုတ်ပေးနေပါတယ်ရှင်...**", reply_markup=UTILS_MENU)
                 cbm_data = get_cbm_card_data()
                 if cbm_data:
-                    # Clean Box Style (NO GOLD)
                     msg = f"<b>🏦 CBM EXCHANGE RATES</b>\n"
                     msg += f"📅 <i>{cbm_data['date']}</i>\n\n"
-                    
                     msg += "<b>💵 ငွေလဲနှုန်း (Official)</b>\n"
                     msg += "<pre>"
                     msg += "  CURRENCY  |    RATE    \n"
@@ -260,7 +276,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     msg += f"  🇹🇭 THB    |  {cbm_data['rates']['THB']:<8}\n"
                     msg += "</pre>\n"
                     msg += f"💡 <i>Source: Central Bank of Myanmar</i>"
-                    
                     await update.message.reply_text(msg, parse_mode="HTML", reply_markup=UTILS_MENU)
                 else:
                     await update.message.reply_text("❌ CBM Data Error", reply_markup=UTILS_MENU)
@@ -303,61 +318,4 @@ Boss စိတ်တိုင်းကျ ခိုင်းစေနိုင�
         await update.message.reply_text("Menu က ခလုတ်လေးတွေ ရွေးပေးပါနော် Boss။", reply_markup=MAIN_MENU)
 
     except Exception as e:
-        logger.error(f"Global Handler Error: {e}")
-        context.user_data['section'] = 'main'
-        context.user_data['mode'] = None
-
-async def call_ai_direct(update, context, prompt):
-    await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
-    try:
-        response = llm.invoke(prompt)
-        await update.message.reply_text(response.content)
-    except: pass
-
-async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query; await query.answer()
-    if query.data == "add_doc": await query.edit_message_text("📥 PDF/Word ဖိုင်လေး ပို့ပေးပါရှင်။")
-    elif query.data == "add_link": context.user_data['mode'] = 'add_link'; await query.edit_message_text("🔗 Link လေး ပို့ပေးပါနော်။")
-    elif query.data == "del_data": context.user_data['mode'] = 'delete_data'; await query.edit_message_text("🗑️ ဖျက်ချင်တဲ့ ဖိုင်နာမည် ပို့ပေးပါရှင်။")
-    elif query.data == "list_mem": 
-        stats = pinecone_index.describe_index_stats()
-        await query.edit_message_text(f"📊 Vectors: {stats.get('total_vector_count')}")
-
-async def process_link(update, context, url):
-    msg = await update.message.reply_text("🔗 Processing...")
-    try:
-        loader = WebBaseLoader(url); docs = loader.load(); splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200); texts = splitter.split_documents(docs)
-        for t in texts: t.metadata = {"source": url}
-        vector_store.add_documents(texts)
-        await context.bot.edit_message_text(chat_id=update.effective_chat.id, message_id=msg.message_id, text="✅ Done.")
-    except: await context.bot.edit_message_text(chat_id=update.effective_chat.id, message_id=msg.message_id, text="Error")
-
-async def handle_document(update, context):
-    msg = await update.message.reply_text("📥 Processing...")
-    try:
-        file = await context.bot.get_file(update.message.document.file_id); fname = update.message.document.file_name
-        with tempfile.NamedTemporaryFile(delete=True, suffix=os.path.splitext(fname)[1]) as tmp:
-            await file.download_to_drive(custom_path=tmp.name)
-            loader = PyPDFLoader(tmp.name) if fname.endswith(".pdf") else Docx2txtLoader(tmp.name)
-            texts = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200).split_documents(loader.load())
-            for t in texts: t.metadata = {"source": fname}
-            vector_store.add_documents(texts)
-        await context.bot.edit_message_text(chat_id=update.effective_chat.id, message_id=msg.message_id, text=f"✅ Saved.")
-    except: await context.bot.edit_message_text(chat_id=update.effective_chat.id, message_id=msg.message_id, text="Error")
-
-# Flask & Main
-flask_app = Flask(''); 
-@flask_app.route('/') 
-def home(): return "Bot Online"
-def run_flask(): flask_app.run(host='0.0.0.0', port=int(os.environ.get("PORT", 10000)))
-
-if __name__ == '__main__':
-    Thread(target=run_flask).start()
-    init_services()
-    if TELEGRAM_BOT_TOKEN:
-        app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
-        app.add_handler(CommandHandler('start', start))
-        app.add_handler(CallbackQueryHandler(handle_callback_query))
-        app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
-        app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
-        app.run_polling()
+       
