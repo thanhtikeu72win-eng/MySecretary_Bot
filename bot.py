@@ -195,7 +195,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 msg += f"📍 <b>{w_data['name']}, {w_data['country']}</b>\n"
                 msg += "━━━━━━━━━━━━━━━━━━\n"
                 msg += f"🌡️ Temp  : <b>{w_data['temp']}°C</b> (Feels {w_data['feels']}°C)\n"
-                msg += f"🏭 AQI   : <b>{w_data['us_aqi']} USAQI+</b>\n"
+                # Fixed: Removed '+' sign to be accurate to API data
+                msg += f"🏭 AQI   : <b>{w_data['us_aqi']} US AQI</b>\n"
                 msg += f"😷 PM2.5 : <b>{w_data['pm25']} μg/m³</b>\n"
                 msg += f"💨 Wind  : <b>{w_data['wind']} km/h</b>\n"
                 msg += f"💧 Rain  : <b>{w_data['rain']} mm</b>\n"
