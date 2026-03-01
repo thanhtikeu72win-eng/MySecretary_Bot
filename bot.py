@@ -34,7 +34,7 @@ def init_services():
     try:
         if GOOGLE_API_KEY:
             genai.configure(api_key=GOOGLE_API_KEY)
-            llm = ChatGoogleGenerativeAI(model="gemini-1.5-flash", google_api_key=GOOGLE_API_KEY)
+            llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", google_api_key=GOOGLE_API_KEY)
 
         if PINECONE_API_KEY and GOOGLE_API_KEY:
             pc = Pinecone(api_key=PINECONE_API_KEY)
