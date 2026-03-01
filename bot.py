@@ -53,7 +53,7 @@ def init_services():
 
 def get_weather_card(city_name):
     try:
-        # Geocoding
+        # 1. Geocoding
         geo_url = f"https://geocoding-api.open-meteo.com/v1/search?name={city_name}&count=1&language=en&format=json"
         geo_res = requests.get(geo_url).json()
         if not geo_res.get('results'): return None
@@ -63,10 +63,15 @@ def get_weather_card(city_name):
         name = geo_res['results'][0]['name']
         country = geo_res['results'][0]['country']
 
-        # Weather Data
-        url = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&current=temperature_2m,relative_humidity_2m,apparent_temperature,precipitation,rain,weather_code,wind_speed_10m,wind_direction_10m&hourly=uv_index&timezone=auto"
-        w_res = requests.get(url).json()
+        # 2. Weather Data
+        w_url = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&current=temperature_2m,apparent_temperature,precipitation,weather_code,wind_speed_10m&timezone=auto"
+        w_res = requests.get(w_url).json()
         curr = w_res['current']
+
+        # 3. Air Quality Data (Separate API Endpoint)
+        aqi_url = f"https://air-quality-api.open-meteo.com/v1/air-quality?latitude={lat}&longitude={lon}&current=us_aqi,pm2_5"
+        aqi_res = requests.get(aqi_url).json()
+        curr_aqi = aqi_res['current']
         
         # Determine Status Icon
         code = curr['weather_code']
@@ -81,7 +86,9 @@ def get_weather_card(city_name):
             "feels": curr['apparent_temperature'],
             "wind": curr['wind_speed_10m'],
             "rain": curr['precipitation'],
-            "status": status
+            "status": status,
+            "us_aqi": curr_aqi['us_aqi'],
+            "pm25": curr_aqi['pm2_5']
         }
     except Exception as e:
         logger.error(f"Weather Error: {e}")
@@ -90,58 +97,51 @@ def get_weather_card(city_name):
 def get_cbm_card_data():
     try:
         cbm = requests.get("https://forex.cbm.gov.mm/api/latest").json()
-        cbm_rates = cbm['rates']
-        
-        # Parsing Official Rates
-        usd = cbm_rates['USD']
-        eur = cbm_rates['EUR']
-        sgd = cbm_rates['SGD']
-        thb = cbm_rates['THB']
-        
-        # Gold Logic: CBM doesn't provide Gold. 
-        # But to match the Screenshot layout, we will show "N/A" or "Ref Only".
-        # Or we can put a static text explaining CBM doesn't control Gold.
-        
         return {
             "date": cbm['info'],
-            "rates": {"USD": usd, "EUR": eur, "SGD": sgd, "THB": thb}
+            "rates": cbm['rates']
         }
     except Exception as e:
         logger.error(f"Currency Error: {e}")
         return None
 
 # ---------------------------------------------------------
-# Keyboards
+# Keyboards (Added is_persistent=True)
 # ---------------------------------------------------------
 
 MAIN_MENU = ReplyKeyboardMarkup(
     [[KeyboardButton("🧠 My Brain"), KeyboardButton("🤖 AI Assistant")],
-     [KeyboardButton("📅 My Schedule"), KeyboardButton("⚡ Utilities")]], resize_keyboard=True
+     [KeyboardButton("📅 My Schedule"), KeyboardButton("⚡ Utilities")]], 
+    resize_keyboard=True, is_persistent=True
 )
 
 AI_TOOLS_MENU = ReplyKeyboardMarkup(
     [[KeyboardButton("✉️ Email Draft"), KeyboardButton("📝 Summarize")],
      [KeyboardButton("🇬🇧⇄🇲🇲 Translate"), KeyboardButton("🧾 Report")],
-     [KeyboardButton("🔙 Main Menu")]], resize_keyboard=True
+     [KeyboardButton("🔙 Main Menu")]], 
+    resize_keyboard=True, is_persistent=True
 )
 
 SCHEDULE_MENU = ReplyKeyboardMarkup(
     [[KeyboardButton("➕ Reminder သစ်"), KeyboardButton("📋 စာရင်းကြည့်")],
-     [KeyboardButton("✅ Task Done"), KeyboardButton("🔙 Main Menu")]], resize_keyboard=True
+     [KeyboardButton("✅ Task Done"), KeyboardButton("🔙 Main Menu")]], 
+    resize_keyboard=True, is_persistent=True
 )
 
 UTILS_MENU = ReplyKeyboardMarkup(
     [[KeyboardButton("🌦️ Weather"), KeyboardButton("💰 Currency")],
      [KeyboardButton("⚙️ Settings"), KeyboardButton("ℹ️ About Secretary")],
-     [KeyboardButton("🔙 Main Menu")]], resize_keyboard=True
+     [KeyboardButton("🔙 Main Menu")]], 
+    resize_keyboard=True, is_persistent=True
 )
 
 SETTINGS_MENU = ReplyKeyboardMarkup(
     [[KeyboardButton("🔄 Change Persona"), KeyboardButton("🗑️ Clear Memory")],
-     [KeyboardButton("🔙 Back")]], resize_keyboard=True
+     [KeyboardButton("🔙 Back")]], 
+    resize_keyboard=True, is_persistent=True
 )
 
-BACK_BTN = ReplyKeyboardMarkup([[KeyboardButton("🔙 Back")]], resize_keyboard=True)
+BACK_BTN = ReplyKeyboardMarkup([[KeyboardButton("🔙 Back")]], resize_keyboard=True, is_persistent=True)
 
 # ---------------------------------------------------------
 # Handlers
@@ -158,8 +158,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text = update.message.text
         user_mode = context.user_data.get('mode')
         section = context.user_data.get('section', 'main')
-        persona = context.user_data.get('persona', 'cute')
-
+        
         # --- 1. Global Back Button ---
         if text == "🔙 Back" or text == "🔙 Main Menu":
             context.user_data['mode'] = None
@@ -175,31 +174,28 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         # --- 2. Action Modes ---
-        
-        # Weather Action
         if user_mode == 'check_weather':
             city = text
             await update.message.reply_text(f"🔍 {city} အတွက် Dashboard လေး ထုတ်ပေးနေပါတယ်ရှင်...", reply_markup=UTILS_MENU)
             
             w_data = get_weather_card(city)
             if w_data:
-                # Clean Dashboard Style (Text based, Clean)
+                # Clean Dashboard Style with AQI
                 msg = f"🌤️ <b>WEATHER DASHBOARD</b>\n"
                 msg += f"📍 <b>{w_data['name']}, {w_data['country']}</b>\n"
                 msg += "━━━━━━━━━━━━━━━━━━\n"
-                msg += f"🌡️ Temp  : <b>{w_data['temp']}°C</b> (Feels {w_data['feels']}°C)\n"
-                msg += f"💨 Wind  : <b>{w_data['wind']} km/h</b>\n"
-                msg += f"💧 Rain  : <b>{w_data['rain']} mm</b>\n"
+                msg += f"🌡️ Temp : <b>{w_data['temp']}°C</b> (Feels {w_data['feels']}°C)\n"
+                msg += f"🏭 AQI  : <b>{w_data['us_aqi']} USAQI+</b>\n"
+                msg += f"😷 PM2.5: <b>{w_data['pm25']} μg/m³</b>\n"
+                msg += f"💨 Wind : <b>{w_data['wind']} km/h</b>\n"
+                msg += f"💧 Rain : <b>{w_data['rain']} mm</b>\n"
                 msg += "━━━━━━━━━━━━━━━━━━\n"
                 msg += f"💡 Status: {w_data['status']}"
                 
                 await update.message.reply_text(msg, parse_mode="HTML", reply_markup=UTILS_MENU)
             else:
                 await update.message.reply_text("❌ မြို့နာမည် ရှာမတွေ့ပါရှင်။ English လို သေချာရိုက်ပေးပါနော် Boss။", reply_markup=UTILS_MENU)
-            
-            # IMPORTANT: Reset mode and RETURN to stop falling through
-            context.user_data['mode'] = None
-            return
+            context.user_data['mode'] = None; return
 
         elif user_mode == 'add_task':
             tasks = context.user_data.get('tasks', []); tasks.append(text); context.user_data['tasks'] = tasks
@@ -217,7 +213,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif user_mode == 'add_link':
             await process_link(update, context, text); context.user_data['mode'] = None; return
         elif user_mode == 'delete_data':
-            # ... deletion logic ...
+            # Deletion logic (simplified)
             context.user_data['mode'] = None; return
 
         # --- 3. Menu Navigation ---
@@ -241,7 +237,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             context.user_data['section'] = 'utils'
             await update.message.reply_text("⚡ **Utilities**", reply_markup=UTILS_MENU); return
 
-        # Sub Menus
         if section == 'utils':
             if text == "🌦️ Weather":
                 context.user_data['mode'] = 'check_weather'
@@ -251,16 +246,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await update.message.reply_text("💰 **ဗဟိုဘဏ်ပေါက်ဈေး (CBM Rate) ကို ထုတ်ပေးနေပါတယ်ရှင်...**", reply_markup=UTILS_MENU)
                 cbm_data = get_cbm_card_data()
                 if cbm_data:
-                    # Creating Layout similar to Screenshot (Clean Boxes)
+                    # Clean Box Style (NO GOLD)
                     msg = f"<b>🏦 CBM EXCHANGE RATES</b>\n"
                     msg += f"📅 <i>{cbm_data['date']}</i>\n\n"
                     
-                    # Gold Section (Ref Only since CBM doesn't provide)
-                    msg += "<b>👑 ရွှေဈေး (Gold Ref)</b>\n"
-                    msg += "<code>[ --- No CBM Data --- ]</code>\n"
-                    msg += "(ဗဟိုဘဏ်မှ ရွှေဈေးမသတ်မှတ်ပါ)\n\n"
-
-                    # Currency Section
                     msg += "<b>💵 ငွေလဲနှုန်း (Official)</b>\n"
                     msg += "<pre>"
                     msg += "  CURRENCY  |    RATE    \n"
@@ -282,7 +271,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await update.message.reply_text("⚙️ **Settings**", reply_markup=SETTINGS_MENU); return
             
             elif text == "ℹ️ About Secretary":
-                # EXACT TEXT PROVIDED BY USER
                 about_msg = """
 ℹ️ **About Your Secretary Bot** 👩‍💼
 
@@ -316,7 +304,6 @@ Boss စိတ်တိုင်းကျ ခိုင်းစေနိုင�
 
     except Exception as e:
         logger.error(f"Global Handler Error: {e}")
-        # Only reply error if not already replied (simplification)
         context.user_data['section'] = 'main'
         context.user_data['mode'] = None
 
