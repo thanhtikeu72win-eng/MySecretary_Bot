@@ -31,9 +31,6 @@ vector_store = None
 llm = None
 pinecone_index = None
 
-# ✅ MARKET SETTINGS (Default based on your screenshot)
-MARKET_RATE_USD = 4500 
-
 def init_services():
     global vector_store, llm, pinecone_index
     try:
@@ -54,42 +51,60 @@ def init_services():
 # HELPER FUNCTIONS
 # ---------------------------------------------------------
 
-def get_currency_card_data():
+def get_weather_card(city_name):
     try:
-        # Get Official Rates for reference
-        cbm = requests.get("https://forex.cbm.gov.mm/api/latest").json()
-        cbm_rates = cbm['rates']
-        usd_official = float(cbm_rates['USD'].replace(',', ''))
+        # Geocoding
+        geo_url = f"https://geocoding-api.open-meteo.com/v1/search?name={city_name}&count=1&language=en&format=json"
+        geo_res = requests.get(geo_url).json()
+        if not geo_res.get('results'): return None
         
-        # --- Market Logic ---
-        # Factor to scale other currencies based on USD Market Rate
-        factor = MARKET_RATE_USD / usd_official
-        
-        # Sell Rates
-        sell_usd = MARKET_RATE_USD
-        sell_eur = float(cbm_rates['EUR'].replace(',', '')) * factor
-        sell_sgd = float(cbm_rates['SGD'].replace(',', '')) * factor
-        sell_thb = float(cbm_rates['THB'].replace(',', '')) * factor
-        
-        # Buy Rates (Spread)
-        buy_usd = sell_usd - 50   # 50 kyat spread
-        buy_sgd = sell_sgd - 40
-        buy_thb = sell_thb - 3
-        buy_eur = sell_eur - 60
+        lat = geo_res['results'][0]['latitude']
+        lon = geo_res['results'][0]['longitude']
+        name = geo_res['results'][0]['name']
+        country = geo_res['results'][0]['country']
 
-        # Gold Price Logic (Estimate based on USD ratio from screenshot ~1390)
-        # Screenshot: USD 4500 -> Gold 6,250,000
-        gold_ratio = 1389 
-        gold_high = int(sell_usd * gold_ratio)
-        gold_std = int(gold_high * 0.928) # 15 P E is roughly 92-93% of High P E
+        # Weather Data
+        url = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&current=temperature_2m,relative_humidity_2m,apparent_temperature,precipitation,rain,weather_code,wind_speed_10m,wind_direction_10m&hourly=uv_index&timezone=auto"
+        w_res = requests.get(url).json()
+        curr = w_res['current']
+        
+        # Determine Status Icon
+        code = curr['weather_code']
+        if code <= 3: status = "Sunny/Cloudy 🌤️"
+        elif code <= 67: status = "Rainy 🌧️"
+        elif code <= 99: status = "Stormy ⛈️"
+        else: status = "Normal"
 
         return {
+            "name": name, "country": country,
+            "temp": curr['temperature_2m'],
+            "feels": curr['apparent_temperature'],
+            "wind": curr['wind_speed_10m'],
+            "rain": curr['precipitation'],
+            "status": status
+        }
+    except Exception as e:
+        logger.error(f"Weather Error: {e}")
+        return None
+
+def get_cbm_card_data():
+    try:
+        cbm = requests.get("https://forex.cbm.gov.mm/api/latest").json()
+        cbm_rates = cbm['rates']
+        
+        # Parsing Official Rates
+        usd = cbm_rates['USD']
+        eur = cbm_rates['EUR']
+        sgd = cbm_rates['SGD']
+        thb = cbm_rates['THB']
+        
+        # Gold Logic: CBM doesn't provide Gold. 
+        # But to match the Screenshot layout, we will show "N/A" or "Ref Only".
+        # Or we can put a static text explaining CBM doesn't control Gold.
+        
+        return {
             "date": cbm['info'],
-            "usd": {"b": int(buy_usd), "s": int(sell_usd)},
-            "sgd": {"b": int(buy_sgd), "s": int(sell_sgd)},
-            "thb": {"b": int(buy_thb), "s": int(sell_thb)},
-            "eur": {"b": int(buy_eur), "s": int(sell_eur)},
-            "gold": {"high": gold_high, "std": gold_std}
+            "rates": {"USD": usd, "EUR": eur, "SGD": sgd, "THB": thb}
         }
     except Exception as e:
         logger.error(f"Currency Error: {e}")
@@ -123,7 +138,7 @@ UTILS_MENU = ReplyKeyboardMarkup(
 
 SETTINGS_MENU = ReplyKeyboardMarkup(
     [[KeyboardButton("🔄 Change Persona"), KeyboardButton("🗑️ Clear Memory")],
-     [KeyboardButton("✏️ Set Market Rate"), KeyboardButton("🔙 Back")]], resize_keyboard=True
+     [KeyboardButton("🔙 Back")]], resize_keyboard=True
 )
 
 BACK_BTN = ReplyKeyboardMarkup([[KeyboardButton("🔙 Back")]], resize_keyboard=True)
@@ -160,39 +175,31 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         # --- 2. Action Modes ---
-        if user_mode == 'set_market_rate':
-            global MARKET_RATE_USD
-            if text.isdigit():
-                MARKET_RATE_USD = int(text)
-                await update.message.reply_text(f"✅ ဈေးနှုန်း ပြင်ဆင်တာ အောင်မြင်ပါတယ် Boss။\nMarket Rate (USD) = {MARKET_RATE_USD} MMK", reply_markup=SETTINGS_MENU)
-            else:
-                await update.message.reply_text("❌ ဂဏန်းသီးသန့်ပဲ ရိုက်ထည့်ပေးပါနော် Boss။ (ဥပမာ: 4500)", reply_markup=SETTINGS_MENU)
-            context.user_data['mode'] = None; return
-
-        elif user_mode == 'check_weather':
+        
+        # Weather Action
+        if user_mode == 'check_weather':
             city = text
-            await update.message.reply_text(f"🔍 {city} မြို့အတွက် Widget လေး ထုတ်ပေးနေပါတယ်ရှင်...", reply_markup=UTILS_MENU)
-            try:
-                # Use wttr.in to generate a beautiful PNG Widget
-                # format: _ (underscore) style, m (metric), Q (quiet), n (narrow)
-                image_url = f"https://wttr.in/{city}_2mQn_lang=en.png"
+            await update.message.reply_text(f"🔍 {city} အတွက် Dashboard လေး ထုတ်ပေးနေပါတယ်ရှင်...", reply_markup=UTILS_MENU)
+            
+            w_data = get_weather_card(city)
+            if w_data:
+                # Clean Dashboard Style (Text based, Clean)
+                msg = f"🌤️ <b>WEATHER DASHBOARD</b>\n"
+                msg += f"📍 <b>{w_data['name']}, {w_data['country']}</b>\n"
+                msg += "━━━━━━━━━━━━━━━━━━\n"
+                msg += f"🌡️ Temp  : <b>{w_data['temp']}°C</b> (Feels {w_data['feels']}°C)\n"
+                msg += f"💨 Wind  : <b>{w_data['wind']} km/h</b>\n"
+                msg += f"💧 Rain  : <b>{w_data['rain']} mm</b>\n"
+                msg += "━━━━━━━━━━━━━━━━━━\n"
+                msg += f"💡 Status: {w_data['status']}"
                 
-                # Use AI for a sweet caption
-                try:
-                    prompt = f"Write a very short, cute weather advice for {city} in Burmese."
-                    advice = llm.invoke(prompt).content
-                except: advice = "ရာသီဥတု ဂရုစိုက်ပါနော် Boss။"
-
-                await context.bot.send_photo(
-                    chat_id=update.effective_chat.id,
-                    photo=image_url,
-                    caption=f"🌤️ **Weather Widget: {city}**\n\n💡 {advice}",
-                    parse_mode="Markdown",
-                    reply_markup=UTILS_MENU
-                )
-            except:
-                await update.message.reply_text("❌ မြို့နာမည် မှားနေလို့ English လို ပြန်ရိုက်ပေးပါနော်။", reply_markup=UTILS_MENU)
-            context.user_data['mode'] = None; return
+                await update.message.reply_text(msg, parse_mode="HTML", reply_markup=UTILS_MENU)
+            else:
+                await update.message.reply_text("❌ မြို့နာမည် ရှာမတွေ့ပါရှင်။ English လို သေချာရိုက်ပေးပါနော် Boss။", reply_markup=UTILS_MENU)
+            
+            # IMPORTANT: Reset mode and RETURN to stop falling through
+            context.user_data['mode'] = None
+            return
 
         elif user_mode == 'add_task':
             tasks = context.user_data.get('tasks', []); tasks.append(text); context.user_data['tasks'] = tasks
@@ -207,18 +214,22 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif user_mode in ['email', 'summarize', 'translate', 'report']:
             await call_ai_direct(update, context, f"Task: {user_mode}. Content: {text}")
             context.user_data['mode'] = None; return
+        elif user_mode == 'add_link':
+            await process_link(update, context, text); context.user_data['mode'] = None; return
+        elif user_mode == 'delete_data':
+            # ... deletion logic ...
+            context.user_data['mode'] = None; return
 
         # --- 3. Menu Navigation ---
         
-        # Main Menu
         if text == "🧠 My Brain":
             context.user_data['section'] = 'brain'
             keyboard = [[InlineKeyboardButton("📥 Add PDF/Word", callback_data="add_doc"), InlineKeyboardButton("🔗 Add Link", callback_data="add_link")], [InlineKeyboardButton("📊 Stats", callback_data="list_mem"), InlineKeyboardButton("🗑️ Delete Data", callback_data="del_data")]]
-            await update.message.reply_text("🧠 **My Brain Panel**\nမှတ်ဉာဏ်ပိုင်းဆိုင်ရာ စီမံခန့်ခွဲမှုတွေ ဒီမှာလုပ်နိုင်ပါတယ်ရှင်။", reply_markup=InlineKeyboardMarkup(keyboard)); return
+            await update.message.reply_text("🧠 **My Brain Panel**", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown"); return
 
         elif text == "🤖 AI Assistant":
             context.user_data['section'] = 'ai_assistant'
-            await update.message.reply_text("🤖 **AI Assistant ပါရှင်**\nသိရှိလိုတာများကို မေးမြန်းနိုင်သလို၊ စာရေးခိုင်းတာတွေလည်း လုပ်ပေးနိုင်ပါတယ် Boss။", reply_markup=AI_TOOLS_MENU); return
+            await update.message.reply_text("🤖 **AI Assistant ပါရှင်**", reply_markup=AI_TOOLS_MENU); return
 
         elif text == "📅 My Schedule":
             context.user_data['section'] = 'schedule'
@@ -228,62 +239,65 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         elif text == "⚡ Utilities":
             context.user_data['section'] = 'utils'
-            await update.message.reply_text("⚡ **Utilities**\nရာသီဥတုနဲ့ ငွေဈေးနှုန်းတွေ ကြည့်မလား Boss?", reply_markup=UTILS_MENU); return
+            await update.message.reply_text("⚡ **Utilities**", reply_markup=UTILS_MENU); return
 
         # Sub Menus
         if section == 'utils':
             if text == "🌦️ Weather":
                 context.user_data['mode'] = 'check_weather'
-                await update.message.reply_text("🌦️ ဘယ်မြို့အတွက် Widget ထုတ်ပေးရမလဲ Boss? (ဥပမာ: Yangon)", reply_markup=BACK_BTN); return
+                await update.message.reply_text("🌦️ ဘယ်မြို့အတွက် ကြည့်ပေးရမလဲ Boss? (ဥပမာ: Yangon)", reply_markup=BACK_BTN); return
             
             elif text == "💰 Currency":
-                await update.message.reply_text("💰 **ဈေးနှုန်းကတ်ပြား (Dashboard) ကို ထုတ်ပေးနေပါတယ်ရှင်...**", reply_markup=UTILS_MENU)
-                data = get_currency_card_data()
-                if data:
-                    # Creating a Beautiful HTML Card to match Screenshot
-                    msg = "<b>💎 DAILY MARKET RATES 💎</b>\n"
-                    msg += f"📅 <i>{data['date']}</i>\n\n"
+                await update.message.reply_text("💰 **ဗဟိုဘဏ်ပေါက်ဈေး (CBM Rate) ကို ထုတ်ပေးနေပါတယ်ရှင်...**", reply_markup=UTILS_MENU)
+                cbm_data = get_cbm_card_data()
+                if cbm_data:
+                    # Creating Layout similar to Screenshot (Clean Boxes)
+                    msg = f"<b>🏦 CBM EXCHANGE RATES</b>\n"
+                    msg += f"📅 <i>{cbm_data['date']}</i>\n\n"
                     
-                    msg += "<b>👑 ရွှေဈေး (Gold)</b>\n"
-                    msg += f"⚱️ အခေါက်ရွှေ:  <b>{data['gold']['high']:,}</b> MMK\n"
-                    msg += f"⚱️ ၁၅ ပဲရည်:   <b>{data['gold']['std']:,}</b> MMK\n\n"
+                    # Gold Section (Ref Only since CBM doesn't provide)
+                    msg += "<b>👑 ရွှေဈေး (Gold Ref)</b>\n"
+                    msg += "<code>[ --- No CBM Data --- ]</code>\n"
+                    msg += "(ဗဟိုဘဏ်မှ ရွှေဈေးမသတ်မှတ်ပါ)\n\n"
 
-                    msg += "<b>💵 ငွေလဲနှုန်း (Currency)</b>\n"
+                    # Currency Section
+                    msg += "<b>💵 ငွေလဲနှုန်း (Official)</b>\n"
                     msg += "<pre>"
-                    msg += " CODE |   BUY    |   SELL   \n"
-                    msg += "------+----------+----------\n"
-                    msg += f" USD  | {data['usd']['b']:<8} | {data['usd']['s']:<8}\n"
-                    msg += f" SGD  | {data['sgd']['b']:<8} | {data['sgd']['s']:<8}\n"
-                    msg += f" THB  | {data['thb']['b']:<8} | {data['thb']['s']:<8}\n"
-                    msg += f" EUR  | {data['eur']['b']:<8} | {data['eur']['s']:<8}\n"
+                    msg += "  CURRENCY  |    RATE    \n"
+                    msg += "------------+------------\n"
+                    msg += f"  🇺🇸 USD    |  {cbm_data['rates']['USD']:<8}\n"
+                    msg += f"  🇪🇺 EUR    |  {cbm_data['rates']['EUR']:<8}\n"
+                    msg += f"  🇸🇬 SGD    |  {cbm_data['rates']['SGD']:<8}\n"
+                    msg += f"  🇹🇭 THB    |  {cbm_data['rates']['THB']:<8}\n"
                     msg += "</pre>\n"
-                    msg += f"💡 <i>Market Rate (Est): USD {MARKET_RATE_USD}</i>"
+                    msg += f"💡 <i>Source: Central Bank of Myanmar</i>"
                     
                     await update.message.reply_text(msg, parse_mode="HTML", reply_markup=UTILS_MENU)
                 else:
-                    await update.message.reply_text("❌ Data ဆွဲမရဖြစ်နေပါတယ်ရှင်။", reply_markup=UTILS_MENU)
+                    await update.message.reply_text("❌ CBM Data Error", reply_markup=UTILS_MENU)
                 return
 
             elif text == "⚙️ Settings":
                 context.user_data['section'] = 'settings'
-                await update.message.reply_text("⚙️ **Settings**\nလိုအပ်တာ ပြင်ဆင်နိုင်ပါတယ် Boss။", reply_markup=SETTINGS_MENU); return
+                await update.message.reply_text("⚙️ **Settings**", reply_markup=SETTINGS_MENU); return
             
             elif text == "ℹ️ About Secretary":
-                await update.message.reply_text("ℹ️ **About:**\nကျွန်မက Boss ရဲ့ Personal Secretary Bot လေးပါရှင်။ 💖", reply_markup=UTILS_MENU); return
+                # EXACT TEXT PROVIDED BY USER
+                about_msg = """
+ℹ️ **About Your Secretary Bot** 👩‍💼
 
-        if section == 'settings':
-            if text == "✏️ Set Market Rate":
-                context.user_data['mode'] = 'set_market_rate'
-                await update.message.reply_text(f"💵 လက်ရှိ USD ပေါက်ဈေး ဘယ်လောက်ထားမလဲ Boss?\n(Current Setting: {MARKET_RATE_USD})", reply_markup=BACK_BTN)
-                return
-            elif text == "🔄 Change Persona":
-                new_p = 'strict' if persona == 'cute' else 'cute'
-                context.user_data['persona'] = new_p
-                txt = "အခုကစပြီး တည်ငြိမ်တဲ့ပုံစံနဲ့ ပြောပါတော့မယ် Boss။" if new_p == 'strict' else "အခုကစပြီး ချစ်စရာကောင်းတဲ့ပုံစံနဲ့ ပြောပါတော့မယ်ရှင် 💖"
-                await update.message.reply_text(txt, reply_markup=SETTINGS_MENU); return
-            elif text == "🗑️ Clear Memory":
-                context.user_data['tasks'] = []
-                await update.message.reply_text("Task တွေကို ရှင်းလင်းလိုက်ပါပြီရှင်။", reply_markup=SETTINGS_MENU); return
+ကျွန်မက Boss ရဲ့ ကိုယ်ပိုင် Digital အတွင်းရေးမှူးမလေး ဖြစ်ပါတယ်ရှင်။
+ကျွန်မ လုပ်ပေးနိုင်တာတွေကတော့ -
+
+1.  **🧠 My Brain:** စာရွက်စာတမ်း (PDF/Word) တွေကို ဖတ်ပြီး မှတ်ထားပေးပါတယ်။ မေးသမျှကို ပြန်ဖြေပေးပါတယ်။
+2.  **📅 My Schedule:** နေ့စဉ် လုပ်စရာတွေကို မှတ်ပေး၊ သတိပေးပါတယ်။
+3.  **🌦️ Weather:** မိုးလေဝသ အခြေအနေကို အချိန်နဲ့တပြေးညီ ကြည့်ပေးပါတယ်။
+4.  **💰 Currency:** ဗဟိုဘဏ် ပေါက်ဈေးတွေကို ကြည့်ပေးပါတယ်။
+5.  **🤖 AI Tools:** Email ရေးခြင်း၊ ဘာသာပြန်ခြင်း၊ Report ရေးခြင်းတို့ကို ကူညီပေးပါတယ်။
+
+Boss စိတ်တိုင်းကျ ခိုင်းစေနိုင်ပါတယ်ရှင်! 💖
+                """
+                await update.message.reply_text(about_msg.strip(), reply_markup=UTILS_MENU); return
 
         # --- AI Chat ---
         if section == 'ai_assistant' and not user_mode:
@@ -292,25 +306,24 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             try:
                 docs = vector_store.similarity_search(text, k=3)
                 context_str = "\n".join([d.page_content for d in docs])
-                prompt = f"Role: You are a polite and intelligent female secretary named 'May'. User is your 'Boss'.\nContext: {context_str}\n\nQuestion: {text}\n\nInstruction: Answer efficiently in Burmese using polite ending particles like 'ရှင်' (Shin)."
+                prompt = f"Role: You are a polite female secretary. Context: {context_str}\n\nQ: {text}\n\nAns (Burmese):"
                 response = llm.invoke(prompt)
                 await update.message.reply_text(response.content)
-            except Exception as e: await update.message.reply_text(f"Error ဖြစ်သွားလို့ပါရှင်: {e}")
+            except: await update.message.reply_text("Error")
             return
             
         await update.message.reply_text("Menu က ခလုတ်လေးတွေ ရွေးပေးပါနော် Boss။", reply_markup=MAIN_MENU)
 
     except Exception as e:
         logger.error(f"Global Handler Error: {e}")
-        await update.message.reply_text("⚠️ Error လေးတစ်ခု ဖြစ်သွားလို့ Main Menu ကို ပြန်သွားပေးပါမယ်ရှင်။", reply_markup=MAIN_MENU)
+        # Only reply error if not already replied (simplification)
         context.user_data['section'] = 'main'
         context.user_data['mode'] = None
 
 async def call_ai_direct(update, context, prompt):
     await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
     try:
-        full_prompt = "You are a polite female secretary. Answer this request from your Boss in Burmese: " + prompt
-        response = llm.invoke(full_prompt)
+        response = llm.invoke(prompt)
         await update.message.reply_text(response.content)
     except: pass
 
@@ -321,20 +334,19 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
     elif query.data == "del_data": context.user_data['mode'] = 'delete_data'; await query.edit_message_text("🗑️ ဖျက်ချင်တဲ့ ဖိုင်နာမည် ပို့ပေးပါရှင်။")
     elif query.data == "list_mem": 
         stats = pinecone_index.describe_index_stats()
-        await query.edit_message_text(f"📊 Memory Status:\nVectors: {stats.get('total_vector_count')}")
+        await query.edit_message_text(f"📊 Vectors: {stats.get('total_vector_count')}")
 
-# ... (process_link and handle_document functions same as before) ...
 async def process_link(update, context, url):
-    msg = await update.message.reply_text("🔗 ဖတ်ရှုမှတ်သားနေပါတယ်ရှင်...")
+    msg = await update.message.reply_text("🔗 Processing...")
     try:
         loader = WebBaseLoader(url); docs = loader.load(); splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200); texts = splitter.split_documents(docs)
         for t in texts: t.metadata = {"source": url}
         vector_store.add_documents(texts)
-        await context.bot.edit_message_text(chat_id=update.effective_chat.id, message_id=msg.message_id, text="✅ မှတ်သားပြီးပါပြီ Boss။")
-    except: await context.bot.edit_message_text(chat_id=update.effective_chat.id, message_id=msg.message_id, text="❌ Error ဖြစ်နေပါတယ်ရှင်။")
+        await context.bot.edit_message_text(chat_id=update.effective_chat.id, message_id=msg.message_id, text="✅ Done.")
+    except: await context.bot.edit_message_text(chat_id=update.effective_chat.id, message_id=msg.message_id, text="Error")
 
 async def handle_document(update, context):
-    msg = await update.message.reply_text("📥 ဖိုင်ကို စစ်ဆေးနေပါတယ်ရှင်...")
+    msg = await update.message.reply_text("📥 Processing...")
     try:
         file = await context.bot.get_file(update.message.document.file_id); fname = update.message.document.file_name
         with tempfile.NamedTemporaryFile(delete=True, suffix=os.path.splitext(fname)[1]) as tmp:
@@ -343,8 +355,8 @@ async def handle_document(update, context):
             texts = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200).split_documents(loader.load())
             for t in texts: t.metadata = {"source": fname}
             vector_store.add_documents(texts)
-        await context.bot.edit_message_text(chat_id=update.effective_chat.id, message_id=msg.message_id, text=f"✅ '{fname}' ကို မှတ်ဉာဏ်ထဲ ထည့်လိုက်ပါပြီရှင်။")
-    except: await context.bot.edit_message_text(chat_id=update.effective_chat.id, message_id=msg.message_id, text="❌ Error ဖြစ်နေပါတယ်ရှင်။")
+        await context.bot.edit_message_text(chat_id=update.effective_chat.id, message_id=msg.message_id, text=f"✅ Saved.")
+    except: await context.bot.edit_message_text(chat_id=update.effective_chat.id, message_id=msg.message_id, text="Error")
 
 # Flask & Main
 flask_app = Flask(''); 
