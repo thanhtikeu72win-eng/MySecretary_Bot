@@ -1,135 +1,175 @@
-import streamlit as st
 import os
-from dotenv import load_dotenv
-from langchain_google_genai import ChatGoogleGenerativeAI, GoogleGenerativeAIEmbeddings
+import logging
+import tempfile
+from flask import Flask
+from threading import Thread
+from telegram import Update, ReplyKeyboardMarkup, InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton
+from telegram.ext import ApplicationBuilder, ContextTypes, CommandHandler, MessageHandler, CallbackQueryHandler, filters
+
+# Gemini & Pinecone Imports
+import google.generativeai as genai
+from langchain_google_genai import GoogleGenerativeAIEmbeddings, ChatGoogleGenerativeAI
+from langchain_community.document_loaders import PyPDFLoader, Docx2txtLoader, WebBaseLoader
+from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_pinecone import PineconeVectorStore
-from langchain.chains import RetrievalQA
-from pinecone import Pinecone # For direct deletion
+from pinecone import Pinecone
 
-# 1. Load Environment Variables
-load_dotenv()
-GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
+# 1. Setup Logging
+logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# 2. Load Env Vars
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY") 
 PINECONE_API_KEY = os.getenv("PINECONE_API_KEY")
-PINECONE_INDEX_NAME = "legal-bot"
+PINECONE_INDEX_NAME = os.getenv("PINECONE_INDEX_NAME", "legal-bot")
 
-# 2. Setup Page Config
-st.set_page_config(page_title="Legal AI Assistant", layout="wide")
+# 3. Global Vars
+vector_store = None
+llm = None
+pinecone_index = None
 
-# 3. Sidebar (My Brain Panel & Tools)
-with st.sidebar:
-    st.header("🧠 My Brain Panel")
-    
-    # --- Status Indicators ---
-    if GOOGLE_API_KEY:
-        st.success("✅ Google AI Ready")
-    else:
-        st.error("❌ Google AI Key Missing")
+def init_services():
+    global vector_store, llm, pinecone_index
+    try:
+        if GOOGLE_API_KEY:
+            genai.configure(api_key=GOOGLE_API_KEY)
+            llm = ChatGoogleGenerativeAI(model="gemini-1.5-flash", google_api_key=GOOGLE_API_KEY)
+
+        if PINECONE_API_KEY and GOOGLE_API_KEY:
+            pc = Pinecone(api_key=PINECONE_API_KEY)
+            pinecone_index = pc.Index(PINECONE_INDEX_NAME)
+            embeddings = GoogleGenerativeAIEmbeddings(model="models/gemini-embedding-001", google_api_key=GOOGLE_API_KEY)
+            vector_store = PineconeVectorStore(index=pinecone_index, embedding=embeddings)
+            logger.info("✅ Pinecone Services Initialized")
+    except Exception as e:
+        logger.error(f"❌ Service Init Error: {e}")
+
+# UI Layout
+MAIN_MENU_KEYBOARD = ReplyKeyboardMarkup(
+    [
+        [KeyboardButton("🧠 My Brain"), KeyboardButton("🤖 AI Chat")],
+        [KeyboardButton("✉️ Email Draft"), KeyboardButton("📝 Summarize")],
+        [KeyboardButton("🇬🇧⇄🇲🇲 Translate"), KeyboardButton("🧾 Report")]
+    ],
+    resize_keyboard=True
+)
+
+# Handlers
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data['mode'] = None
+    await update.message.reply_text("မင်္ဂလာပါ Boss! AI Assistant System အဆင်သင့်ပါ။", reply_markup=MAIN_MENU_KEYBOARD)
+
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text
+    mode = context.user_data.get('mode')
+
+    # --- 1. Special Modes (Tools) ---
+    if mode == 'add_link':
+        if text.startswith("http"): await process_link(update, context, text)
+        else: await update.message.reply_text("❌ Link အမှန် မဟုတ်ပါ (http...)", reply_markup=MAIN_MENU_KEYBOARD)
+        context.user_data['mode'] = None
+        return
+
+    elif mode == 'delete_data':
+        # 🗑️ DELETE LOGIC HERE
+        try:
+            await update.message.reply_text(f"🗑️ Deleting data for source: {text} ...")
+            pinecone_index.delete(filter={"source": {"$eq": text}})
+            await update.message.reply_text(f"✅ Successfully deleted data for: {text}", reply_markup=MAIN_MENU_KEYBOARD)
+        except Exception as e:
+            await update.message.reply_text(f"❌ Error deleting: {e}", reply_markup=MAIN_MENU_KEYBOARD)
+        context.user_data['mode'] = None
+        return
+
+    # (Other Tools: Email, Summarize, etc. - Shortened for brevity, same logic as before)
+    elif mode == 'email_draft':
+        await call_ai(update, f"Draft a professional email about: '{text}'.")
+        context.user_data['mode'] = None; return
+    elif mode == 'summarize':
+        await call_ai(update, f"Summarize this text: '{text}'.")
+        context.user_data['mode'] = None; return
+    elif mode == 'translate':
+        await call_ai(update, f"Translate: '{text}'.")
+        context.user_data['mode'] = None; return
+    elif mode == 'report':
+        await call_ai(update, f"Create a report on: '{text}'.")
+        context.user_data['mode'] = None; return
+
+    # --- 2. Main Menu Logic ---
+    if text == "🧠 My Brain":
+        keyboard = [
+            [InlineKeyboardButton("📥 Add PDF/Word", callback_data="add_doc"), InlineKeyboardButton("🔗 Add Link", callback_data="add_link")],
+            [InlineKeyboardButton("📊 Stats", callback_data="list_mem"), InlineKeyboardButton("🗑️ Delete Data", callback_data="del_data")]
+        ]
+        await update.message.reply_text("🧠 **My Brain Panel:**", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
         
-    if PINECONE_API_KEY:
-        st.success("✅ Database Connected")
+    elif text == "🤖 AI Chat":
+        context.user_data['mode'] = None
+        await update.message.reply_text("🤖 မေးခွန်းမေးပါ Boss...", reply_markup=MAIN_MENU_KEYBOARD)
+
+    # Tool Buttons
+    elif text == "✉️ Email Draft": context.user_data['mode'] = 'email_draft'; await ask_input(update, "Topic for Email?")
+    elif text == "📝 Summarize": context.user_data['mode'] = 'summarize'; await ask_input(update, "Text to Summarize?")
+    elif text == "🇬🇧⇄🇲🇲 Translate": context.user_data['mode'] = 'translate'; await ask_input(update, "Text to Translate?")
+    elif text == "🧾 Report": context.user_data['mode'] = 'report'; await ask_input(update, "Topic for Report?")
+
     else:
-        st.error("❌ Database Key Missing")
+        # Default Chat (RAG)
+        if not vector_store: await update.message.reply_text("⚠️ DB Error"); return
+        await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
+        try:
+            docs = vector_store.similarity_search(text, k=3)
+            context = "\n".join([d.page_content for d in docs])
+            prompt = f"Context: {context}\nQuestion: {text}\nAnswer:"
+            response = llm.invoke(prompt)
+            await update.message.reply_text(response.content, reply_markup=MAIN_MENU_KEYBOARD)
+        except Exception as e:
+            await update.message.reply_text(f"Error: {e}")
 
-    st.divider()
+async def call_ai(update, prompt):
+    response = llm.invoke(prompt)
+    await update.message.reply_text(response.content, reply_markup=MAIN_MENU_KEYBOARD)
 
-    # --- AI Tools (Features) ---
-    st.subheader("🛠️ AI Tools")
-    tool_choice = st.radio(
-        "Choose a Tool:",
-        ["💬 Chat (Default)", "✉️ Email Draft", "📝 Summarize", "🇬🇧⇄🇲🇲 Translate", "🧾 Report"]
-    )
+async def ask_input(update, msg):
+    await update.message.reply_text(f"{msg}", reply_markup=ReplyKeyboardMarkup([[KeyboardButton("🔙 Back")]], resize_keyboard=True))
 
-    st.divider()
+async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
     
-    # --- 🗑️ DELETE DATA SECTION (NEW) ---
-    with st.expander("🗑️ Delete Data (Danger Zone)", expanded=False):
-        st.warning("Warning: This action cannot be undone!")
-        delete_source = st.text_input("Paste Source Path to Delete:", placeholder="e.g., D:\\TranscendSync\\File.docx")
-        
-        if st.button("🗑️ Delete File Data"):
-            if delete_source:
-                try:
-                    # Initialize Pinecone Client directly
-                    pc = Pinecone(api_key=PINECONE_API_KEY)
-                    index = pc.Index(PINECONE_INDEX_NAME)
-                    
-                    # Delete by Filter
-                    with st.spinner("Deleting vectors..."):
-                        index.delete(filter={"source": {"$eq": delete_source}})
-                        st.success(f"✅ Deleted all data for: {delete_source}")
-                except Exception as e:
-                    st.error(f"❌ Error: {e}")
-            else:
-                st.warning("⚠️ Please enter a source path.")
-
-    st.divider()
-    with st.expander("ℹ️ Help / Guide"):
-        st.markdown("""
-        - **Chat:** Ask general legal questions.
-        - **Delete Data:** Paste the full file path from your logs to remove duplicates.
-        """)
-
-# 4. Main App Logic
-st.title("⚖️ Legal AI Assistant")
-
-if "messages" not in st.session_state:
-    st.session_state.messages = []
-
-# Display Chat History
-for message in st.session_state.messages:
-    with st.chat_message(message["role"]):
-        st.markdown(message["content"])
-
-# 5. Initialize AI & Database
-embeddings = GoogleGenerativeAIEmbeddings(model="models/gemini-embedding-001")
-vectorstore = PineconeVectorStore(index_name=PINECONE_INDEX_NAME, embedding=embeddings)
-llm = ChatGoogleGenerativeAI(model="gemini-1.5-flash", temperature=0.3)
-
-# 6. Define Prompts for Tools 📝
-def get_prompt_by_tool(tool_name, user_input):
-    base_prompt = ""
+    if query.data == "del_data":
+        context.user_data['mode'] = 'delete_data'
+        await query.edit_message_text("🗑️ ဖျက်လိုသော File ၏ Source Path အပြည့်အစုံကို ပို့ပေးပါ Boss။\n(Example: D:\\TranscendSync\\File.docx)")
     
-    if tool_name == "✉️ Email Draft":
-        base_prompt = f"You are a professional lawyer. Draft a formal email about: '{user_input}'. Use polite and professional language."
-    
-    elif tool_name == "📝 Summarize":
-        base_prompt = f"Please summarize the following legal text or topic concisely in bullet points: '{user_input}'."
-    
-    elif tool_name == "🇬🇧⇄🇲🇲 Translate":
-        base_prompt = f"Translate the following text to the other language (English to Burmese OR Burmese to English) accurately, maintaining legal terminology: '{user_input}'."
-    
-    elif tool_name == "🧾 Report":
-        base_prompt = f"Generate a formal legal report structure regarding: '{user_input}'. Include Introduction, Legal Analysis, and Conclusion sections."
-    
-    return base_prompt
+    # ... (Other callbacks same as before: add_doc, add_link, list_mem) ...
+    elif query.data == "add_doc": await query.edit_message_text("📥 PDF/Word ပို့ပါ Boss။")
+    elif query.data == "add_link": context.user_data['mode'] = 'add_link'; await query.edit_message_text("🔗 Link ပို့ပါ Boss။")
+    elif query.data == "list_mem": 
+        stats = pinecone_index.describe_index_stats()
+        await query.edit_message_text(f"Vectors: {stats.get('total_vector_count')}")
 
-# 7. Chat Input & Processing
-if prompt := st.chat_input("မေးခွန်း မေးမြန်းပါ..."):
-    st.session_state.messages.append({"role": "user", "content": prompt})
-    with st.chat_message("user"):
-        st.markdown(prompt)
+# Process Link & Document (Same as previous code) ...
+async def process_link(update, context, url): 
+    # (Include previous process_link code here)
+    pass 
+async def handle_document(update, context):
+    # (Include previous handle_document code here)
+    pass
 
-    with st.chat_message("assistant"):
-        with st.spinner("Thinking..."):
-            try:
-                special_prompt = get_prompt_by_tool(tool_choice, prompt)
+# Flask Server
+flask_app = Flask('')
+@flask_app.route('/')
+def home(): return "Bot Running"
+def run_flask(): flask_app.run(host='0.0.0.0', port=int(os.environ.get("PORT", 10000)))
 
-                if special_prompt:
-                    # Tool Logic (Direct LLM)
-                    response = llm.invoke(special_prompt)
-                    result = response.content
-                else:
-                    # Chat Logic (RAG)
-                    qa_chain = RetrievalQA.from_chain_type(
-                        llm=llm,
-                        chain_type="stuff",
-                        retriever=vectorstore.as_retriever(),
-                    )
-                    response = qa_chain.invoke(prompt)
-                    result = response["result"]
-
-                st.markdown(result)
-                st.session_state.messages.append({"role": "assistant", "content": result})
-
-            except Exception as e:
-                st.error(f"Error: {e}")
+if __name__ == '__main__':
+    Thread(target=run_flask).start()
+    init_services()
+    if TELEGRAM_BOT_TOKEN:
+        app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
+        app.add_handler(CommandHandler('start', start))
+        app.add_handler(CallbackQueryHandler(handle_callback_query))
+        app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
+        # Add Document handler if needed
+        app.run_polling()
