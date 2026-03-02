@@ -26,6 +26,16 @@ GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
 PINECONE_API_KEY = os.getenv("PINECONE_API_KEY")
 PINECONE_INDEX_NAME = os.getenv("PINECONE_INDEX_NAME", "mysecretary79-bot")
 
+# Debug Check
+print(f"DEBUG CHECK: TELEGRAM_BOT_TOKEN is {'✅ OK' if TELEGRAM_BOT_TOKEN else '❌ MISSING'}")
+print(f"DEBUG CHECK: GOOGLE_API_KEY is {'✅ OK' if GOOGLE_API_KEY else '❌ MISSING'}")
+print(f"DEBUG CHECK: PINECONE_INDEX_NAME is {'✅ OK' if PINECONE_INDEX_NAME else '❌ MISSING'}")
+print(f"DEBUG CHECK: PINECONE_API_KEY is {'✅ OK' if PINECONE_API_KEY else '❌ MISSING'}")
+
+# 🔒 SECURITY LOCK
+# Get User ID from Env, if empty allow everyone (Not Recommended for Private Data)
+ALLOWED_USER_ID = os.getenv("ALLOWED_USER_ID")
+
 # 3. Global Vars
 vector_store = None
 llm = None
@@ -155,7 +165,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ]
     await context.bot.set_my_commands(commands)
     
-    await update.message.reply_text("မင်္ဂလာပါ Boss! ရှင့်ရဲ့ အတွင်းရေးမှူးမလေး အဆင်သင့်ရှိနေပါတယ်ရှင်။ 👩‍💼\n\nဒီနေ့ ဘာကူညီပေးရမလဲ?", reply_markup=MAIN_MENU)
+    await update.message.reply_text("မင်္ဂလာပါ ဆရာ့ အတွင်းရေးမှူးမလေး အဆင်သင့်ရှိနေပါတယ်ရှင်။ 👩‍💼\n\nဒီနေ့ ဘာကူညီပေးရမလဲ?", reply_markup=MAIN_MENU)
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
@@ -178,7 +188,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if text == "/weather":
             context.user_data['section'] = 'utils'
             context.user_data['mode'] = 'check_weather'
-            await update.message.reply_text("🌦️ ဘယ်မြို့အတွက် ကြည့်ပေးရမလဲ Boss? (ဥပမာ: Yangon)", reply_markup=BACK_BTN)
+            await update.message.reply_text("🌦️ ဘယ်မြို့ရဲ့ ရာသီဥတုကို ကြည့်ပေးရမလဲ ဆရာ? (Naypyitaw,Yangon, Mandalay)", reply_markup=BACK_BTN)
             return
         
         if text == "/currency":
@@ -246,13 +256,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         elif text == "🤖 AI Assistant":
             context.user_data['section'] = 'ai_assistant'
-            await update.message.reply_text("🤖 **AI Assistant ပါရှင်**", reply_markup=AI_TOOLS_MENU)
+            await update.message.reply_text("🤖 **မင်္ဂလာပါ၊ ကျွန်မက ဆရာရဲ့ AI Assistant ပါရှင် မေးခွန်းမေးမြန်းနိုင်ပါတယ်ရှင့်**", reply_markup=AI_TOOLS_MENU)
             return
 
         elif text == "📅 My Schedule":
             context.user_data['section'] = 'schedule'
             tasks = context.user_data.get('tasks', [])
-            task_str = "\n".join([f"{i+1}. {t}" for i, t in enumerate(tasks)]) if tasks else "ဒီနေ့အတွက် ဘာမှမရှိသေးပါဘူးရှင်။"
+            task_str = "\n".join([f"{i+1}. {t}" for i, t in enumerate(tasks)]) if tasks else "ဒီနေ့အတွက် Reminder ဘာမှမရှိသေးပါဘူးရှင်။"
             await update.message.reply_text(f"📅 **Today's Plan:**\n\n{task_str}", reply_markup=SCHEDULE_MENU)
             return
 
@@ -265,7 +275,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if section == 'utils' or text == "💰 Currency" or text == "🌦️ Weather":
             if text == "🌦️ Weather":
                 context.user_data['mode'] = 'check_weather'
-                await update.message.reply_text("🌦️ ဘယ်မြို့အတွက် ကြည့်ပေးရမလဲ Boss? (ဥပမာ: Yangon)", reply_markup=BACK_BTN)
+                await update.message.reply_text("🌦️ ဘယ်မြို့ရဲ့ရာသီဥတုကို ကြည့်ပေးရမလဲ ဆရာ? (Naypyitaw,Yangon, Mandalay)", reply_markup=BACK_BTN)
                 return
             
             elif text == "💰 Currency":
@@ -298,7 +308,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 about_msg = """
 ℹ️ **About Your Secretary Bot** 👩‍💼
 
-ကျွန်မက Boss ရဲ့ ကိုယ်ပိုင် Digital အတွင်းရေးမှူးမလေး ဖြစ်ပါတယ်ရှင်။
+ကျွန်မက ဆရာရဲ့ ကိုယ်ပိုင် Digital အတွင်းရေးမှူးမလေး ဖြစ်ပါတယ်ရှင်။
 ကျွန်မ လုပ်ပေးနိုင်တာတွေကတော့ -
 
 1.  **🧠 My Brain:** စာရွက်စာတမ်း (PDF/Word) တွေကို ဖတ်ပြီး မှတ်ထားပေးပါတယ်။ မေးသမျှကို ပြန်ဖြေပေးပါတယ်။
@@ -307,7 +317,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 4.  **💰 Currency:** ဗဟိုဘဏ် ပေါက်ဈေးတွေကို ကြည့်ပေးပါတယ်။
 5.  **🤖 AI Tools:** Email ရေးခြင်း၊ ဘာသာပြန်ခြင်း၊ Report ရေးခြင်းတို့ကို ကူညီပေးပါတယ်။
 
-Boss စိတ်တိုင်းကျ ခိုင်းစေနိုင်ပါတယ်ရှင်! 💖
+ဆရာ စိတ်တိုင်းကျ ခိုင်းစေနိုင်ပါတယ်ရှင်! 💖
                 """
                 await update.message.reply_text(about_msg.strip(), reply_markup=UTILS_MENU)
                 return

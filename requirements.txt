@@ -12,3 +12,4 @@ pypdf
 beautifulsoup4
 flask
 docx2txt
+tiktoken
