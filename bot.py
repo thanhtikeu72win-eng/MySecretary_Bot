@@ -3,6 +3,7 @@ import logging
 import tempfile
 import requests
 import json
+from datetime import datetime, timedelta, timezone
 from flask import Flask
 from threading import Thread
 from telegram import Update, ReplyKeyboardMarkup, InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, BotCommand
@@ -20,11 +21,15 @@ from pinecone import Pinecone
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# 2. Load Env Vars
+# 2. Load Env Vars & n8n Config
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY") 
 PINECONE_API_KEY = os.getenv("PINECONE_API_KEY")
 PINECONE_INDEX_NAME = os.getenv("PINECONE_INDEX_NAME", "mysecretary79-bot")
+
+# n8n Webhook URL (Added)
+N8N_WEBHOOK_URL = "https://thanhtike72win-n8n-server.hf.space/webhook/calendar-event"
+MMT = timezone(timedelta(hours=6, minutes=30)) # Myanmar Timezone
 
 # Debug Check
 print(f"DEBUG CHECK: TELEGRAM_BOT_TOKEN is {'✅ OK' if TELEGRAM_BOT_TOKEN else '❌ MISSING'}")
@@ -33,7 +38,6 @@ print(f"DEBUG CHECK: PINECONE_INDEX_NAME is {'✅ OK' if PINECONE_INDEX_NAME els
 print(f"DEBUG CHECK: PINECONE_API_KEY is {'✅ OK' if PINECONE_API_KEY else '❌ MISSING'}")
 
 # 🔒 SECURITY LOCK
-# Get User ID from Env, if empty allow everyone (Not Recommended for Private Data)
 ALLOWED_USER_ID = os.getenv("ALLOWED_USER_ID")
 
 # 3. Global Vars
@@ -194,7 +198,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if text == "/currency":
             text = "💰 Currency" 
 
-        # Action Modes
+        # ==========================================
+        # ACTION MODES LOGIC
+        # ==========================================
         if user_mode == 'check_weather':
             city = text
             await update.message.reply_text(f"🔍 {city} အတွက် Dashboard လေး ထုတ်ပေးနေပါတယ်ရှင်...", reply_markup=UTILS_MENU)
@@ -205,7 +211,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 msg += f"📍 <b>{w_data['name']}, {w_data['country']}</b>\n"
                 msg += "━━━━━━━━━━━━━━━━━━\n"
                 msg += f"🌡️ Temp  : <b>{w_data['temp']}°C</b> (Feels {w_data['feels']}°C)\n"
-                # Fixed: Removed '+' sign to be accurate to API data
                 msg += f"🏭 AQI   : <b>{w_data['us_aqi']} US AQI</b>\n"
                 msg += f"😷 PM2.5 : <b>{w_data['pm25']} μg/m³</b>\n"
                 msg += f"💨 Wind  : <b>{w_data['wind']} km/h</b>\n"
@@ -217,6 +222,53 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await update.message.reply_text("❌ မြို့နာမည် ရှာမတွေ့ပါရှင်။ English လို သေချာရိုက်ပေးပါနော် Boss။", reply_markup=UTILS_MENU)
             context.user_data['mode'] = None
             return
+
+        # ------ NEW: n8n Calendar Event Mode ------
+        elif user_mode == 'add_calendar_event':
+            await update.message.reply_text("⏳ n8n မှတဆင့် Google Calendar ထဲကို ချိတ်ဆက်ထည့်သွင်းပေးနေပါတယ်ရှင်...", reply_markup=SCHEDULE_MENU)
+            try:
+                current_time = datetime.now(MMT).strftime('%Y-%m-%d %H:%M:%S')
+                
+                # Ask Gemini to format the natural language into JSON
+                prompt = f"""
+                You are an AI assistant. Extract event details from the user's text and return ONLY a valid JSON object. Do NOT include markdown code blocks like ```json.
+                Current DateTime in Myanmar: {current_time}
+                
+                Rules:
+                1. eventName: Summarize the event title briefly.
+                2. startTime: Estimate the start time. Format EXACTLY as "YYYY-MM-DDTHH:MM:SS+06:30".
+                3. endTime: Estimate end time (default to 1 hour after start if not mentioned). Format EXACTLY as "YYYY-MM-DDTHH:MM:SS+06:30".
+                
+                User Text: "{text}"
+                """
+                
+                ai_response = llm.invoke(prompt)
+                ai_text = ai_response.content.strip()
+                
+                # Clean up markdown if Gemini adds it
+                if ai_text.startswith("```json"): ai_text = ai_text[7:]
+                if ai_text.startswith("```"): ai_text = ai_text[3:]
+                if ai_text.endswith("```"): ai_text = ai_text[:-3]
+                
+                # Parse JSON
+                event_data = json.loads(ai_text.strip())
+                
+                # Send to n8n Webhook
+                headers = {'Content-Type': 'application/json'}
+                n8n_response = requests.post(N8N_WEBHOOK_URL, json=event_data, headers=headers, timeout=15)
+                
+                if n8n_response.status_code == 200:
+                    await update.message.reply_text(f"✅ Google Calendar ထဲကို အောင်မြင်စွာ မှတ်သားပေးလိုက်ပါပြီ Boss!\n\n📌 ပွဲအမည်: {event_data.get('eventName')}")
+                else:
+                    await update.message.reply_text(f"❌ n8n Server ဘက်မှ လက်မခံပါရှင်။ (Status Code: {n8n_response.status_code})")
+                    
+            except Exception as e:
+                logger.error(f"Calendar Event Error: {e}")
+                await update.message.reply_text("❌ အချိန်နဲ့ ရက်စွဲ ခွဲခြားရာတွင် အခက်အခဲဖြစ်သွားပါတယ်ရှင်။ ပိုမိုရှင်းလင်းစွာ ပြန်ပြောကြည့်ပေးပါနော်။")
+            
+            context.user_data['mode'] = None
+            return
+        # ------------------------------------------
 
         elif user_mode == 'add_task':
             tasks = context.user_data.get('tasks', [])
@@ -247,7 +299,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             context.user_data['mode'] = None
             return
 
-        # Main Menu Logic
+        # ==========================================
+        # MAIN MENU & SUB MENU BUTTON LOGIC
+        # ==========================================
         if text == "🧠 My Brain":
             context.user_data['section'] = 'brain'
             keyboard = [[InlineKeyboardButton("📥 Add PDF/Word", callback_data="add_doc"), InlineKeyboardButton("🔗 Add Link", callback_data="add_link")], [InlineKeyboardButton("📊 Stats", callback_data="list_mem"), InlineKeyboardButton("🗑️ Delete Data", callback_data="del_data")]]
@@ -271,7 +325,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("⚡ **Utilities**", reply_markup=UTILS_MENU)
             return
 
-        # Sub Menu Logic
+        # ------ NEW: Reminder Button Handler ------
+        elif text == "➕ Reminder သစ်":
+            context.user_data['mode'] = 'add_calendar_event'
+            await update.message.reply_text("📅 ဘာအစီအစဉ် ရှိလဲ Boss? အချိန်နဲ့တကွ ပြောပြပေးပါ။\n(ဥပမာ - မနက်ဖြန် နေ့လည် ၂ နာရီ Meeting ရှိတယ်)", reply_markup=BACK_BTN)
+            return
+        # ------------------------------------------
+
         if section == 'utils' or text == "💰 Currency" or text == "🌦️ Weather":
             if text == "🌦️ Weather":
                 context.user_data['mode'] = 'check_weather'
@@ -311,13 +371,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 ကျွန်မက ဆရာရဲ့ ကိုယ်ပိုင် Digital အတွင်းရေးမှူးမလေး ဖြစ်ပါတယ်ရှင်။
 ကျွန်မ လုပ်ပေးနိုင်တာတွေကတော့ -
 
-1.  **🧠 My Brain:** စာရွက်စာတမ်း (PDF/Word) တွေကို ဖတ်ပြီး မှတ်ထားပေးပါတယ်။ မေးသမျှကို ပြန်ဖြေပေးပါတယ်။
-2.  **📅 My Schedule:** နေ့စဉ် လုပ်စရာတွေကို မှတ်ပေး၊ သတိပေးပါတယ်။
-3.  **🌦️ Weather:** မိုးလေဝသ အခြေအနေကို အချိန်နဲ့တပြေးညီ ကြည့်ပေးပါတယ်။
+1.  **🧠 My Brain:** စာရွက်စာတမ်း (PDF/Word) တွေကို ဖတ်ပြီး မှတ်ထားပေးပါတယ်။
+2.  **📅 My Schedule:** Google Calendar နဲ့ ချိတ်ဆက်ပြီး Reminder တွေ မှတ်ပေးပါတယ်။
+3.  **🌦️ Weather:** မိုးလေဝသ အခြေအနေ ကြည့်ပေးပါတယ်။
 4.  **💰 Currency:** ဗဟိုဘဏ် ပေါက်ဈေးတွေကို ကြည့်ပေးပါတယ်။
-5.  **🤖 AI Tools:** Email ရေးခြင်း၊ ဘာသာပြန်ခြင်း၊ Report ရေးခြင်းတို့ကို ကူညီပေးပါတယ်။
-
-ဆရာ စိတ်တိုင်းကျ ခိုင်းစေနိုင်ပါတယ်ရှင်! 💖
+5.  **🤖 AI Tools:** Email ရေးခြင်း၊ ဘာသာပြန်ခြင်း ကူညီပေးပါတယ်။
                 """
                 await update.message.reply_text(about_msg.strip(), reply_markup=UTILS_MENU)
                 return
