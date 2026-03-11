@@ -14,9 +14,9 @@ GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
 N8N_WEBHOOK_URL = "https://thanhtike72win-n8n-server.hf.space/webhook/add-expense"
 
 # Initialize Bot and Gemini
-bot = telebot.TeleBot(TELEGRAM_BOT_TOKEN)
+bot = telebot.TeleBot(EXPENSE_TRACKER_TOKEN)
 genai.configure(api_key=GOOGLE_API_KEY)
-model = genai.GenerativeModel('gemini-1.5-flash')
+model = genai.GenerativeModel('gemini-2.5-flash')
 
 # ==========================================
 # Render အတွက် Dummy Web Server (ဒီအပိုင်း အသစ်တိုးလာပါတယ်)
