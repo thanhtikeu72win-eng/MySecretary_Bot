@@ -8,15 +8,15 @@ from flask import Flask
 import threading
 
 # 2. Load Env Vars & n8n Config
-TELEGRAM_BOT_TOKEN = os.getenv("EXPENSE_TRACKER_TOKEN")
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY") 
 
 N8N_WEBHOOK_URL = "https://thanhtike72win-n8n-server.hf.space/webhook/add-expense"
 
 # Initialize Bot and Gemini
-bot = telebot.TeleBot(EXPENSE_TRACKER_TOKEN)
+bot = telebot.TeleBot(TELEGRAM_BOT_TOKEN)
 genai.configure(api_key=GOOGLE_API_KEY)
-model = genai.GenerativeModel('gemini-2.5-flash')
+model = genai.GenerativeModel('gemini-1.5-flash')
 
 # ==========================================
 # Render အတွက် Dummy Web Server (ဒီအပိုင်း အသစ်တိုးလာပါတယ်)
