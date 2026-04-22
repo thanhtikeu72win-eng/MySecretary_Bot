@@ -8,13 +8,13 @@ langchain-text-splitters
 langchain-pinecone
 pinecone-client
 google-generativeai
+google-auth
+google-auth-oauthlib
+google-auth-httplib2
+google-api-python-client
 requests
 pypdf
 beautifulsoup4
 flask
 docx2txt
 tiktoken
-google-auth
-google-auth-oauthlib
-google-auth-httplib2
-google-api-python-client
