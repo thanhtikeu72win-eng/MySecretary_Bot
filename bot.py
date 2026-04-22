@@ -17,25 +17,34 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_pinecone import PineconeVectorStore
 from pinecone import Pinecone
 
+# 🆕 Google Calendar Imports
+from google.oauth2 import service_account
+from googleapiclient.discovery import build
+from googleapiclient.errors import HttpError
+
 # 1. Setup Logging
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# 2. Load Env Vars & n8n Config
+# 2. Load Env Vars
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY") 
 PINECONE_API_KEY = os.getenv("PINECONE_API_KEY")
 PINECONE_INDEX_NAME = os.getenv("PINECONE_INDEX_NAME", "mysecretary79-bot")
 
-# n8n Webhook URL (Added)
-N8N_WEBHOOK_URL = "https://thanhtike72win-n8n-server.hf.space/webhook/calendar-event"
-MMT = timezone(timedelta(hours=6, minutes=30)) # Myanmar Timezone
+# 🆕 Google Calendar Env Vars
+GOOGLE_CALENDAR_ID = os.getenv("GOOGLE_CALENDAR_ID")
+GOOGLE_SERVICE_ACCOUNT_JSON = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON")
+
+MMT = timezone(timedelta(hours=6, minutes=30))  # Myanmar Timezone
 
 # Debug Check
 print(f"DEBUG CHECK: TELEGRAM_BOT_TOKEN is {'✅ OK' if TELEGRAM_BOT_TOKEN else '❌ MISSING'}")
 print(f"DEBUG CHECK: GOOGLE_API_KEY is {'✅ OK' if GOOGLE_API_KEY else '❌ MISSING'}")
 print(f"DEBUG CHECK: PINECONE_INDEX_NAME is {'✅ OK' if PINECONE_INDEX_NAME else '❌ MISSING'}")
 print(f"DEBUG CHECK: PINECONE_API_KEY is {'✅ OK' if PINECONE_API_KEY else '❌ MISSING'}")
+print(f"DEBUG CHECK: GOOGLE_CALENDAR_ID is {'✅ OK' if GOOGLE_CALENDAR_ID else '❌ MISSING'}")
+print(f"DEBUG CHECK: GOOGLE_SERVICE_ACCOUNT_JSON is {'✅ OK' if GOOGLE_SERVICE_ACCOUNT_JSON else '❌ MISSING'}")
 
 # 🔒 SECURITY LOCK
 ALLOWED_USER_ID = os.getenv("ALLOWED_USER_ID")
@@ -44,22 +53,101 @@ ALLOWED_USER_ID = os.getenv("ALLOWED_USER_ID")
 vector_store = None
 llm = None
 pinecone_index = None
+calendar_service = None  # 🆕 Google Calendar Service
 
 def init_services():
-    global vector_store, llm, pinecone_index
+    global vector_store, llm, pinecone_index, calendar_service
     try:
+        # Gemini LLM
         if GOOGLE_API_KEY:
             genai.configure(api_key=GOOGLE_API_KEY)
             llm = ChatGoogleGenerativeAI(model="gemini-2.5-flash", google_api_key=GOOGLE_API_KEY)
+            logger.info("✅ Gemini LLM Initialized")
 
+        # Pinecone
         if PINECONE_API_KEY and GOOGLE_API_KEY:
             pc = Pinecone(api_key=PINECONE_API_KEY)
             pinecone_index = pc.Index(PINECONE_INDEX_NAME)
             embeddings = GoogleGenerativeAIEmbeddings(model="models/gemini-embedding-001", google_api_key=GOOGLE_API_KEY)
             vector_store = PineconeVectorStore(index=pinecone_index, embedding=embeddings)
             logger.info("✅ Pinecone Services Initialized")
+
+        # 🆕 Google Calendar
+        if GOOGLE_SERVICE_ACCOUNT_JSON and GOOGLE_CALENDAR_ID:
+            creds_info = json.loads(GOOGLE_SERVICE_ACCOUNT_JSON)
+            credentials = service_account.Credentials.from_service_account_info(
+                creds_info,
+                scopes=['https://www.googleapis.com/auth/calendar']
+            )
+            calendar_service = build('calendar', 'v3', credentials=credentials, cache_discovery=False)
+            logger.info("✅ Google Calendar Initialized")
+
     except Exception as e:
         logger.error(f"❌ Service Init Error: {e}")
+
+# ---------------------------------------------------------
+# 🆕 GOOGLE CALENDAR FUNCTIONS
+# ---------------------------------------------------------
+
+def create_calendar_event(event_name, start_time, end_time, description=""):
+    """Create a new event in Google Calendar"""
+    try:
+        if not calendar_service:
+            return None, "Calendar service not initialized"
+        
+        event = {
+            'summary': event_name,
+            'description': description,
+            'start': {
+                'dateTime': start_time,
+                'timeZone': 'Asia/Yangon'
+            },
+            'end': {
+                'dateTime': end_time,
+                'timeZone': 'Asia/Yangon'
+            },
+            'reminders': {
+                'useDefault': False,
+                'overrides': [
+                    {'method': 'popup', 'minutes': 60},  # 1 hour before
+                    {'method': 'popup', 'minutes': 15},  # 15 min before
+                ],
+            },
+        }
+        
+        result = calendar_service.events().insert(
+            calendarId=GOOGLE_CALENDAR_ID,
+            body=event
+        ).execute()
+        
+        return result, None
+    except HttpError as e:
+        logger.error(f"Calendar HTTP Error: {e}")
+        return None, f"HTTP Error: {e}"
+    except Exception as e:
+        logger.error(f"Calendar Create Error: {e}")
+        return None, str(e)
+
+def list_upcoming_events(max_results=10):
+    """List upcoming events from Google Calendar"""
+    try:
+        if not calendar_service:
+            return None
+        
+        now = datetime.now(MMT).isoformat()
+        events_result = calendar_service.events().list(
+            calendarId=GOOGLE_CALENDAR_ID,
+            timeMin=now,
+            maxResults=max_results,
+            singleEvents=True,
+            orderBy='startTime'
+        ).execute()
+        
+        events = events_result.get('items', [])
+        return events
+    except Exception as e:
+        logger.error(f"Calendar List Error: {e}")
+        return None
 
 # ---------------------------------------------------------
 # HELPER FUNCTIONS
@@ -223,24 +311,42 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             context.user_data['mode'] = None
             return
 
-        # ------ NEW: n8n Calendar Event Mode ------
+        # ==========================================
+        # 🆕 NEW: Google Calendar Direct Integration
+        # ==========================================
         elif user_mode == 'add_calendar_event':
-            await update.message.reply_text("⏳ n8n မှတဆင့် Google Calendar ထဲကို ချိတ်ဆက်ထည့်သွင်းပေးနေပါတယ်ရှင်...", reply_markup=SCHEDULE_MENU)
+            await update.message.reply_text("⏳ Google Calendar ထဲကို ချိတ်ဆက်ထည့်သွင်းပေးနေပါတယ်ရှင်...", reply_markup=SCHEDULE_MENU)
             try:
+                if not calendar_service:
+                    await update.message.reply_text("❌ Calendar Service ချိတ်ဆက်မထားပါရှင်။ Environment Variables စစ်ပေးပါ။")
+                    context.user_data['mode'] = None
+                    return
+                
                 current_time = datetime.now(MMT).strftime('%Y-%m-%d %H:%M:%S')
+                day_of_week = datetime.now(MMT).strftime('%A')
                 
                 # Ask Gemini to format the natural language into JSON
                 prompt = f"""
-                You are an AI assistant. Extract event details from the user's text and return ONLY a valid JSON object. Do NOT include markdown code blocks like ```json.
-                Current DateTime in Myanmar: {current_time}
-                
-                Rules:
-                1. eventName: Summarize the event title briefly.
-                2. startTime: Estimate the start time. Format EXACTLY as "YYYY-MM-DDTHH:MM:SS+06:30".
-                3. endTime: Estimate end time (default to 1 hour after start if not mentioned). Format EXACTLY as "YYYY-MM-DDTHH:MM:SS+06:30".
-                
-                User Text: "{text}"
-                """
+You are an AI assistant that extracts calendar event details from Burmese/English text. Return ONLY a valid JSON object (NO markdown, NO code blocks, NO explanation).
+
+Current DateTime in Myanmar (MMT +06:30): {current_time}
+Current Day: {day_of_week}
+
+Rules:
+1. eventName: Brief title of the event (can be in Burmese or English)
+2. startTime: Event start time in format "YYYY-MM-DDTHH:MM:SS+06:30"
+3. endTime: Event end time (default to 1 hour after start if not specified)
+4. description: Brief description or empty string
+
+Examples:
+- "မနက်ဖြန် နေ့လည် ၂ နာရီ Meeting" → start: tomorrow 14:00:00, end: tomorrow 15:00:00
+- "Tonight 8pm dinner" → start: today 20:00:00, end: today 21:00:00
+- "Next Monday 10am doctor appointment" → start: next monday 10:00:00
+
+User Text: "{text}"
+
+Return JSON only:
+"""
                 
                 ai_response = llm.invoke(prompt)
                 ai_text = ai_response.content.strip()
@@ -249,26 +355,49 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 if ai_text.startswith("```json"): ai_text = ai_text[7:]
                 if ai_text.startswith("```"): ai_text = ai_text[3:]
                 if ai_text.endswith("```"): ai_text = ai_text[:-3]
+                ai_text = ai_text.strip()
+                
+                logger.info(f"AI Parsed: {ai_text}")
                 
                 # Parse JSON
-                event_data = json.loads(ai_text.strip())
+                event_data = json.loads(ai_text)
                 
-                # Send to n8n Webhook
-                headers = {'Content-Type': 'application/json'}
-                n8n_response = requests.post(N8N_WEBHOOK_URL, json=event_data, headers=headers, timeout=15)
+                # Create event in Google Calendar
+                result, error = create_calendar_event(
+                    event_name=event_data.get('eventName', 'Untitled Event'),
+                    start_time=event_data.get('startTime'),
+                    end_time=event_data.get('endTime'),
+                    description=event_data.get('description', '')
+                )
                 
-                if n8n_response.status_code == 200:
-                    await update.message.reply_text(f"✅ Google Calendar ထဲကို အောင်မြင်စွာ မှတ်သားပေးလိုက်ပါပြီ Boss!\n\n📌 ပွဲအမည်: {event_data.get('eventName')}")
-                else:
-                    await update.message.reply_text(f"❌ n8n Server ဘက်မှ လက်မခံပါရှင်။ (Status Code: {n8n_response.status_code})")
+                if result:
+                    # Format display time
+                    start_dt = datetime.fromisoformat(event_data['startTime'].replace('+06:30', ''))
+                    display_time = start_dt.strftime('%Y-%m-%d %I:%M %p')
                     
+                    success_msg = f"✅ <b>Google Calendar ထဲ မှတ်သားပြီးပါပြီ Boss!</b>\n\n"
+                    success_msg += f"📌 <b>ပွဲအမည်:</b> {event_data.get('eventName')}\n"
+                    success_msg += f"🕐 <b>အချိန်:</b> {display_time}\n"
+                    
+                    if event_data.get('description'):
+                        success_msg += f"📝 <b>မှတ်ချက်:</b> {event_data.get('description')}\n"
+                    
+                    success_msg += f"\n🔔 မိနစ် ၆၀ နှင့် ၁၅ မိနစ်အလို သတိပေးပါမယ်ရှင်။\n"
+                    success_msg += f"\n🔗 <a href=\"{result.get('htmlLink')}\">Calendar မှာ ကြည့်ရန်</a>"
+                    
+                    await update.message.reply_text(success_msg, parse_mode="HTML", disable_web_page_preview=True)
+                else:
+                    await update.message.reply_text(f"❌ Calendar ထဲ ထည့်ရာမှာ အမှားဖြစ်သွားပါတယ်ရှင်။\n\nError: {error}")
+                    
+            except json.JSONDecodeError as e:
+                logger.error(f"JSON Parse Error: {e}")
+                await update.message.reply_text("❌ AI က အချိန်ကို မှန်မှန်ကန်ကန် ခွဲမထုတ်နိုင်ပါဘူးရှင်။\n\nဥပမာ - \"မနက်ဖြန် မနက် ၁၀ နာရီ Meeting\" လို ပိုရှင်းအောင် ပြန်ရေးပေးပါနော်။")
             except Exception as e:
                 logger.error(f"Calendar Event Error: {e}")
-                await update.message.reply_text("❌ အချိန်နဲ့ ရက်စွဲ ခွဲခြားရာတွင် အခက်အခဲဖြစ်သွားပါတယ်ရှင်။ ပိုမိုရှင်းလင်းစွာ ပြန်ပြောကြည့်ပေးပါနော်။")
+                await update.message.reply_text(f"❌ Error ဖြစ်သွားပါတယ်ရှင်။\n\nDetails: {str(e)[:200]}")
             
             context.user_data['mode'] = None
             return
-        # ------------------------------------------
 
         elif user_mode == 'add_task':
             tasks = context.user_data.get('tasks', [])
@@ -315,9 +444,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         elif text == "📅 My Schedule":
             context.user_data['section'] = 'schedule'
-            tasks = context.user_data.get('tasks', [])
-            task_str = "\n".join([f"{i+1}. {t}" for i, t in enumerate(tasks)]) if tasks else "ဒီနေ့အတွက် Reminder ဘာမှမရှိသေးပါဘူးရှင်။"
-            await update.message.reply_text(f"📅 **Today's Plan:**\n\n{task_str}", reply_markup=SCHEDULE_MENU)
+            await update.message.reply_text("📅 **My Schedule Panel**\n\nGoogle Calendar နဲ့ ချိတ်ဆက်ထားပါတယ်ရှင်။", reply_markup=SCHEDULE_MENU)
             return
 
         elif text == "⚡ Utilities":
@@ -325,12 +452,52 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("⚡ **Utilities**", reply_markup=UTILS_MENU)
             return
 
-        # ------ NEW: Reminder Button Handler ------
+        # 🆕 Schedule Menu Handlers
         elif text == "➕ Reminder သစ်":
             context.user_data['mode'] = 'add_calendar_event'
-            await update.message.reply_text("📅 ဘာအစီအစဉ် ရှိလဲ Boss? အချိန်နဲ့တကွ ပြောပြပေးပါ။\n(ဥပမာ - မနက်ဖြန် နေ့လည် ၂ နာရီ Meeting ရှိတယ်)", reply_markup=BACK_BTN)
+            await update.message.reply_text(
+                "📅 ဘာအစီအစဉ် ရှိလဲ Boss? အချိန်နဲ့တကွ ပြောပြပေးပါ။\n\n"
+                "<b>ဥပမာ:</b>\n"
+                "• မနက်ဖြန် နေ့လည် ၂ နာရီ Meeting\n"
+                "• Tonight 8pm dinner with family\n"
+                "• Next Monday 10am doctor appointment\n"
+                "• ၂၅ ရက် နံနက် ၉ နာရီ စာချုပ်လက်မှတ်ထိုးမယ်",
+                parse_mode="HTML",
+                reply_markup=BACK_BTN
+            )
             return
-        # ------------------------------------------
+
+        elif text == "📋 စာရင်းကြည့်":
+            await update.message.reply_text("🔍 Google Calendar မှ Events များ ဆွဲထုတ်နေပါတယ်ရှင်...", reply_markup=SCHEDULE_MENU)
+            
+            events = list_upcoming_events(max_results=10)
+            if events is None:
+                await update.message.reply_text("❌ Calendar ချိတ်ဆက်မှု အမှားဖြစ်နေပါတယ်ရှင်။")
+            elif not events:
+                await update.message.reply_text("📭 လာမည့်ရက်များတွင် အစီအစဉ် မရှိသေးပါရှင်။")
+            else:
+                msg = "📋 <b>လာမည့် အစီအစဉ်များ</b>\n"
+                msg += "━━━━━━━━━━━━━━━━━━\n\n"
+                for i, event in enumerate(events, 1):
+                    start = event['start'].get('dateTime', event['start'].get('date'))
+                    try:
+                        start_dt = datetime.fromisoformat(start.replace('Z', '+00:00'))
+                        display_time = start_dt.strftime('%m/%d %I:%M %p')
+                    except:
+                        display_time = start
+                    
+                    msg += f"<b>{i}. {event.get('summary', 'Untitled')}</b>\n"
+                    msg += f"   🕐 {display_time}\n\n"
+                
+                await update.message.reply_text(msg, parse_mode="HTML", reply_markup=SCHEDULE_MENU)
+            return
+
+        elif text == "✅ Task Done":
+            await update.message.reply_text(
+                "✅ Great job Boss! 👏\n\nGoogle Calendar ထဲက event တစ်ခု ဖျက်ချင်ရင် Calendar app ထဲမှာ တိုက်ရိုက် ဖျက်ပေးပါနော်ရှင်။",
+                reply_markup=SCHEDULE_MENU
+            )
+            return
 
         if section == 'utils' or text == "💰 Currency" or text == "🌦️ Weather":
             if text == "🌦️ Weather":
